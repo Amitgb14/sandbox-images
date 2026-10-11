@@ -1,0 +1,96 @@
+#!/bin/sh
+# sandbox-desktop: a desktop in this sandbox, served over VNC on the guest's
+# own loopback. Run it in the background (Studio's Desktop tab does); it stays
+# in the foreground as the display, so stopping it stops the desktop.
+#
+# This replaces the desktop image's script of the same name, with the same
+# variables and the same port, so whatever starts that one starts this.
+#
+#   SANDBOX_DESKTOP_SIZE      the screen, WxHxDEPTH (default 1280x800x24)
+#   SANDBOX_DESKTOP_PORT      the VNC port on 127.0.0.1 (default 5900)
+#   SANDBOX_DESKTOP_SESSION   xfce (default) or openbox, the desktop image's
+#                             window manager, terminal and browser
+set -eu
+
+display=:1
+size=${SANDBOX_DESKTOP_SIZE:-1280x800x24}
+port=${SANDBOX_DESKTOP_PORT:-5900}
+session=${SANDBOX_DESKTOP_SESSION:-xfce}
+export DISPLAY=$display
+
+case $session in
+  xfce|openbox) ;;
+  *) echo "sandbox-desktop: SANDBOX_DESKTOP_SESSION is xfce or openbox, not '$session'" >&2; exit 2 ;;
+esac
+
+geometry=${size%x*}
+depth=${size##*x}
+case $geometry in
+  *x*) ;;
+  *) echo "sandbox-desktop: SANDBOX_DESKTOP_SIZE is WxHxDEPTH, not '$size'" >&2; exit 2 ;;
+esac
+
+# A runtime directory of the user's own: the session bus, the portals and
+# Flatpak keep their sockets there. The guest has no login manager to make one.
+: "${XDG_RUNTIME_DIR:=/tmp/runtime-$(id -u)}"
+export XDG_RUNTIME_DIR
+mkdir -p -m 0700 "$XDG_RUNTIME_DIR"
+
+# Flatpak: the user's own installation, in HOME, so what they install lives
+# with their work. Adding Flathub reads the description kept in the image, so
+# it needs no network; installing from it does.
+if command -v flatpak >/dev/null 2>&1; then
+  flatpak remote-add --user --if-not-exists flathub \
+    /usr/share/sandbox-workstation/flathub.flatpakrepo >/dev/null 2>&1 || true
+fi
+# Apps from either installation appear in the menu. (Debian sets this in a
+# login shell's profile; nothing here is a login shell.)
+XDG_DATA_DIRS="$HOME/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export XDG_DATA_DIRS
+# The guest has no /dev/fuse, so an AppImage cannot mount itself: it unpacks
+# to a temporary directory and runs from there instead.
+export APPIMAGE_EXTRACT_AND_RUN=1
+
+# A stale lock from a desktop that was killed would keep the display from
+# starting again.
+if [ -e /tmp/.X1-lock ] && ! kill -0 "$(tr -d ' ' </tmp/.X1-lock)" 2>/dev/null; then
+  rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+fi
+
+# The display and the VNC server in one. On loopback only and with no
+# password: the only way to it is the API's tunnel, which only a caller allowed
+# to use this sandbox can open. -nolisten tcp: X itself is reached through its
+# unix socket only. -AlwaysShared lets a second viewer join rather than cut off
+# the first. -AcceptSetDesktopSize lets a viewer resize the screen to fit.
+Xvnc "$display" \
+  -geometry "$geometry" -depth "$depth" \
+  -rfbport "$port" -localhost -interface 127.0.0.1 \
+  -SecurityTypes None -AlwaysShared -AcceptSetDesktopSize \
+  -nolisten tcp -desktop sandbox &
+xvnc=$!
+# Stopping this script stops the desktop, even when the signal reaches this
+# script alone rather than its whole process group.
+trap 'kill "$xvnc" 2>/dev/null; exit 143' TERM INT HUP
+
+i=0
+until xdpyinfo >/dev/null 2>&1; do
+  kill -0 "$xvnc" 2>/dev/null || { echo "sandbox-desktop: the display exited" >&2; exit 1; }
+  i=$((i + 1))
+  [ "$i" -lt 100 ] || { echo "sandbox-desktop: the display did not start" >&2; exit 1; }
+  sleep 0.1
+done
+
+case $session in
+  xfce)
+    xdg-user-dirs-update >/dev/null 2>&1 || true
+    dbus-launch --exit-with-session startxfce4 >/dev/null 2>&1 &
+    ;;
+  openbox)
+    openbox &
+    xterm -geometry 100x30+40+40 &
+    chromium --new-window "about:blank" >/dev/null 2>&1 &
+    ;;
+esac
+
+# The display is what this script is: when it goes, the desktop goes.
+wait "$xvnc"
