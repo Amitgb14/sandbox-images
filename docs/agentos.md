@@ -129,4 +129,8 @@ with `sandbox-cli agent claude -- -p "…"`, each task finished on its own:
 | Clone pallets/itsdangerous, run its tests, show the report in Mousepad | Done: 297 passed; report and screenshot saved. |
 | `-- --permission-mode default` | The agent's file-changing command waited for approval: the flag overrides the managed default. |
 
-Not yet checked: Studio's Desktop tab on a desktop the agent started, arm64.
+Studio's Desktop tab on a desktop the agent started: the tab used to start a
+second session on it; the workstation image's `sandbox-desktop` now reuses the
+running desktop (docs/workstation.md).
+
+Not yet checked: arm64.

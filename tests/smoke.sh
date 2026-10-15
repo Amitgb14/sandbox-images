@@ -70,4 +70,16 @@ sleep 5
   fi
 ' || { "$engine" logs "$name" >&2; fail "the desktop is not right"; }
 
+echo "smoke: starting it again reuses the running desktop"
+# As Studio's Desktop tab does each time it connects.
+"$engine" exec "$name" sh -c '
+  sandbox-desktop >/tmp/again.log 2>&1 & again=$!
+  sleep 5
+  kill -0 $again 2>/dev/null || { echo "the second start did not stay up"; cat /tmp/again.log; exit 1; }
+  grep -q "already running" /tmp/again.log || { echo "the second start did not say so"; cat /tmp/again.log; exit 1; }
+  n=$(pgrep -u 1001 -c -x xfce4-session)
+  [ "$n" -eq 1 ] || { echo "$n desktop sessions"; exit 1; }
+  kill $again
+' || fail "a second start is not right"
+
 echo "smoke: ok"

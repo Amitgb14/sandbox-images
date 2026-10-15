@@ -90,6 +90,11 @@ and the sandbox user can run it but not remove or update it.
 | `SANDBOX_DESKTOP_PORT` | `5900` | the VNC port; Studio's tab reaches 5900 only |
 | `SANDBOX_DESKTOP_SESSION` | `xfce` | `openbox` for the desktop image's lighter session |
 
+Running `sandbox-desktop` while a desktop is already up starts nothing: it says
+so and stays in the foreground for as long as that desktop runs. Studio's
+Desktop tab runs it each time it connects, and an agent's tools may have
+started the desktop first.
+
 ## What is different from the desktop image
 
 - **No setuid or setgid programs.** The image removes the bit from every file.
@@ -155,4 +160,10 @@ its window, Flathub was set up for the user.
 Checked on 2026-10-15 in a guest with network (Firecracker, through the
 agentos image): `flatpak install --user` failed for want of a system bus, which
 the wrapper above now provides; with it, GNOME Calculator installed from
-Flathub. Not yet checked: Studio's Desktop tab against this image, arm64.
+Flathub.
+
+Checked on 2026-10-15 with Studio's Desktop tab on a desktop that was already
+running: each time the tab connected it ran `sandbox-desktop`, which started a
+second XFCE session on the same display ("The notification area lost
+selection"). It now reuses the running desktop, under a lock, and
+tests/smoke.sh checks it. Not yet checked: arm64.
