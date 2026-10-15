@@ -30,6 +30,17 @@ echo "smoke: programs"
   test -s /usr/share/sandbox-workstation/flathub.flatpakrepo || { echo "missing: flathub.flatpakrepo"; exit 1; }
 ' || fail "a program is missing"
 
+echo "smoke: flatpak has a system bus to ask"
+# The container, like the guest, has no system bus; the wrapper starts one.
+"$engine" run --rm --user 1001:1001 "$image" sh -c '
+  [ "$(command -v flatpak)" = /usr/local/bin/flatpak ] || { echo "flatpak is not the wrapper"; exit 1; }
+  flatpak --version >/dev/null && flatpak --version >/dev/null
+  n=$(pgrep -u 1001 -c -x dbus-daemon)
+  [ "$n" -eq 1 ] || { echo "$n private system buses"; exit 1; }
+  dbus-send --bus="unix:path=/tmp/runtime-1001/flatpak-system-bus" --dest=org.freedesktop.DBus \
+    --print-reply / org.freedesktop.DBus.Peer.Ping >/dev/null || { echo "the bus does not answer"; exit 1; }
+' || fail "flatpak would have no system bus"
+
 echo "smoke: no setuid or setgid files"
 n=$("$engine" run --rm "$image" sh -c 'find / -xdev -type f -perm /6000 2>/dev/null | wc -l')
 [ "$n" -eq 0 ] || fail "$n setuid or setgid files"

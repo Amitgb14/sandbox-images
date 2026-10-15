@@ -93,12 +93,13 @@ RUN mkdir -p /usr/share/sandbox-workstation \
     && flatpak override --system --filesystem=home "${PINTA}"
 
 COPY sandbox-desktop /usr/local/bin/sandbox-desktop
+COPY flatpak /usr/local/bin/flatpak
 COPY helpers.rc /etc/xdg/xfce4/helpers.rc
 COPY xfce4-desktop.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
 COPY xfwm4.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
 COPY appimage.sh /etc/profile.d/sandbox-appimage.sh
 
-RUN chmod 0755 /usr/local/bin/sandbox-desktop \
+RUN chmod 0755 /usr/local/bin/sandbox-desktop /usr/local/bin/flatpak \
     # The panel's own default, put where XFCE looks first: without it, the
     # first start asks "default config or one empty panel?" in a dialog.
     && cp /etc/xdg/xfce4/panel/default.xml \

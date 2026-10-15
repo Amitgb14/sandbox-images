@@ -70,6 +70,13 @@ Installing needs the network to reach Flathub (`dl.flathub.org`, `flathub.org`)
 and whatever the app downloads. Use `--network open`, or an allowlist naming
 those.
 
+`flatpak` is a small wrapper (`/usr/local/bin/flatpak`) around Debian's. The
+guest runs no system services, so it has no D-Bus system bus, and Flatpak asks
+that bus about parental controls before it installs an app: with no bus at all
+it fails ("Could not connect: No such file or directory"). The wrapper starts a
+private bus for the sandbox user, with nothing on it, and Flatpak then skips the
+check as it does on any machine without parental controls.
+
 Pinta is installed system-wide, in the image: it works with no network at all,
 and the sandbox user can run it but not remove or update it.
 
@@ -143,6 +150,9 @@ needs nothing of the kind.
 
 Checked on 2026-10-11, Linux, Firecracker 1.17, guest kernel 6.1.155: the
 desktop started, VNC answered on 127.0.0.1:5900, no setuid files, Pinta opened
-its window, Flathub was set up for the user. Not yet checked: installing from
-Flathub inside a guest (the local `sandboxd` had no network), Studio's
-Desktop tab against this image, arm64.
+its window, Flathub was set up for the user.
+
+Checked on 2026-10-15 in a guest with network (Firecracker, through the
+agentos image): `flatpak install --user` failed for want of a system bus, which
+the wrapper above now provides; with it, GNOME Calculator installed from
+Flathub. Not yet checked: Studio's Desktop tab against this image, arm64.
