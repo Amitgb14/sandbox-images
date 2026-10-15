@@ -14,6 +14,7 @@ work on its own:
 |---|---|---|
 | Desktop | An MCP server: screenshots, mouse, keyboard, windows, applications, clipboard | `agentos-desktop-mcp` |
 | Browser | Playwright's MCP server, driving the image's Chromium on the same desktop | `agentos-browser-mcp` |
+| ACP | The agent over the Agent Client Protocol, for editors and other clients outside the sandbox | `agentos-acp` |
 | Settings | No permission prompts, a few deny rules, both MCP servers, the agent's instructions | `/etc/claude-code/` |
 
 Everything in the workstation image is here too: XFCE, Thunar, Chromium, Pinta,
@@ -38,6 +39,45 @@ starts the desktop itself when it first needs it.
 
 `sandbox-cli agent state` says whether the agent is working, waiting, idle,
 done or failed; `sandbox-cli agent wait` waits for one of those.
+
+## From an editor, over ACP
+
+`agentos-acp` speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+on stdin and stdout, so an editor such as Zed, or any ACP client, can drive the
+agent in a sandbox: send it a task, watch its plan and tool calls stream back,
+and answer its permission requests. It is the ACP project's Claude Code adapter
+(`@agentclientprotocol/claude-agent-acp`), run on the image's own Claude Code,
+so it has the same settings, tools and instructions as `sandbox-cli agent`.
+
+First make a sandbox with your login in it. `-- --version` asks the model
+nothing; it only lets `sandbox-cli agent` restore the login and keep the
+sandbox:
+
+```sh
+sandbox-cli agent claude --image ghcr.io/amitgb14/sandbox-agentos:edge \
+  --network open --cpus 2 --memory 4096 --keep --name ws -- --version
+```
+
+Then give the client this as the agent's command:
+
+```sh
+sandbox-cli exec ws -- agentos-acp
+```
+
+The session starts with no permission prompts, as the managed settings say;
+the client can switch it to `default` (ask), `acceptEdits`, `plan` or `auto`,
+and in `default` the agent's requests come to the client to answer.
+
+Two things in the client's session request are changed, and each is said on
+stderr:
+
+- **The client's MCP servers are dropped.** Claude Code here may use only the
+  image's servers, and refuses a session that offers more; and a client's
+  stdio servers are programs on the client's machine, which are not in the
+  sandbox.
+- **A working directory the sandbox does not have** (an editor sends its own
+  project's path) becomes HOME. Clone the project into the sandbox, or ask the
+  agent to.
 
 ## How it works on its own
 
@@ -107,8 +147,10 @@ as long as the sandbox. They refuse `file:` URLs.
 `tests/agentos-smoke.sh IMAGE` checks a built image in a container: the
 settings are in place, nothing is setuid, and both MCP servers work the desktop
 through a real MCP client — a screenshot, the pointer, typing into a window,
-starting applications, the clipboard, opening a page in the browser. It cannot
-run the agent, which needs a login.
+starting applications, the clipboard, opening a page in the browser — and that
+an ACP client (`tests/acp-client.py`) can open a session with the agent, an
+editor's kind of request included. It cannot give the agent a task, which needs
+a login.
 
 ```sh
 podman build --build-arg BASE=localhost/sandbox-workstation:dev \
@@ -128,9 +170,12 @@ with `sandbox-cli agent claude -- -p "…"`, each task finished on its own:
 | Install GIMP from Flathub, open it from the desktop, save a screenshot | Done: GIMP 3.2.6, opened with `open_app`; the install needed the workstation image's `flatpak` wrapper (docs/workstation.md). |
 | Clone pallets/itsdangerous, run its tests, show the report in Mousepad | Done: 297 passed; report and screenshot saved. |
 | `-- --permission-mode default` | The agent's file-changing command waited for approval: the flag overrides the managed default. |
+| Over ACP (`sandbox-cli exec ws -- agentos-acp`, `tests/acp-client.py`): open example.com, save a screenshot, give its title | Done; the plan, tool calls and answer streamed to the client. |
+| Over ACP, the session switched to `default` | The agent's command came to the client as a permission request; allowed, it ran. |
+| Over ACP, with an editor's project path and an MCP server of its own | The session opened in HOME with the image's two servers; without agentos-acp's changes Claude Code refused it ("You cannot dynamically configure MCP servers when an enterprise MCP config is present"). |
 
 Studio's Desktop tab on a desktop the agent started: the tab used to start a
 second session on it; the workstation image's `sandbox-desktop` now reuses the
 running desktop (docs/workstation.md).
 
-Not yet checked: arm64.
+Not yet checked: a real editor (Zed) as the ACP client, arm64.

@@ -4,6 +4,7 @@
 # desktop as the sandbox user, through a real MCP client: the desktop server
 # starts the desktop, takes a screenshot, types into a window, finds and starts
 # applications, and uses the clipboard; the browser server opens a page.
+# Last, an ACP client (tests/acp-client.py) opens a session with the agent.
 #
 # What it cannot check here: the agent itself, which needs a login. See
 # docs/agentos.md, "Checking on a real host".
@@ -21,7 +22,7 @@ trap cleanup EXIT
 
 echo "smoke: programs and settings"
 "$engine" run --rm --user 1001:1001 "$image" sh -c '
-  for p in agentos-desktop-mcp agentos-browser-mcp claude sandbox-desktop xdotool wmctrl xclip chromium; do
+  for p in agentos-desktop-mcp agentos-browser-mcp agentos-acp claude sandbox-desktop xdotool wmctrl xclip chromium; do
     command -v "$p" >/dev/null || { echo "missing: $p"; exit 1; }
   done
   for f in managed-settings.json managed-mcp.json CLAUDE.md; do
@@ -128,5 +129,21 @@ EOF
     pgrep -u 1001 -x "$p" >/dev/null || { echo "not running: $p"; exit 1; }
   done
 ' || fail "the desktop the MCP server started is not right"
+
+echo "smoke: the agent answers over ACP"
+# A handshake only: initialize and a new session, which starts the image's
+# own Claude Code; a prompt would need a login. The session must start in
+# the managed settings' mode.
+out=$(python3 -I "$(dirname "$0")/acp-client.py" --handshake --timeout 90 -- \
+        "$engine" exec -i "$name" agentos-acp 2>/dev/null) || fail "no ACP handshake: $out"
+echo "$out" | sed 's/^/  /'
+echo "$out" | grep -q "mode bypassPermissions" || fail "the ACP session is not in bypassPermissions"
+
+# An editor sends its own project path and its own MCP servers; neither is
+# here, and Claude Code refuses extra servers. agentos-acp drops them.
+out=$(python3 -I "$(dirname "$0")/acp-client.py" --handshake --timeout 90 \
+        --cwd /Users/someone/project --client-mcp "editor-tools=/usr/bin/true" -- \
+        "$engine" exec -i "$name" agentos-acp 2>/dev/null) || fail "an editor's session request was refused: $out"
+echo "  ok: an editor's path and MCP servers are handled"
 
 echo "smoke: ok"
