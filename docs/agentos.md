@@ -64,6 +64,22 @@ Then give the client this as the agent's command:
 sandbox-cli exec ws -- agentos-acp
 ```
 
+In Zed, that is a custom agent in `settings.json`; it then appears under
+**External Agents** in the agent panel's new-thread menu:
+
+```json
+{
+  "agent_servers": {
+    "AgentOS": {
+      "type": "custom",
+      "command": "sandbox-cli",
+      "args": ["exec", "ws", "--", "agentos-acp"],
+      "env": {}
+    }
+  }
+}
+```
+
 The session starts with no permission prompts, as the managed settings say;
 the client can switch it to `default` (ask), `acceptEdits`, `plan` or `auto`,
 and in `default` the agent's requests come to the client to answer.
@@ -173,9 +189,11 @@ with `sandbox-cli agent claude -- -p "…"`, each task finished on its own:
 | Over ACP (`sandbox-cli exec ws -- agentos-acp`, `tests/acp-client.py`): open example.com, save a screenshot, give its title | Done; the plan, tool calls and answer streamed to the client. |
 | Over ACP, the session switched to `default` | The agent's command came to the client as a permission request; allowed, it ran. |
 | Over ACP, with an editor's project path and an MCP server of its own | The session opened in HOME with the image's two servers; without agentos-acp's changes Claude Code refused it ("You cannot dynamically configure MCP servers when an enterprise MCP config is present"). |
+| Zed 1.24.2 as the ACP client: an AgentOS thread, a task reading a project file, opening example.com and saving a screenshot | Done; Zed showed each tool call and the answer. The thread opened in Bypass permissions, from the managed settings. Zed ran inside the guest for this check (on its desktop, with `agentos-acp` as the command), so the `sandbox-cli exec` hop was the one checked above. |
+| The same thread switched to Manual | Zed showed the command with Yes / No; Yes, and it ran. |
 
 Studio's Desktop tab on a desktop the agent started: the tab used to start a
 second session on it; the workstation image's `sandbox-desktop` now reuses the
 running desktop (docs/workstation.md).
 
-Not yet checked: a real editor (Zed) as the ACP client, arm64.
+Not yet checked: Zed on another machine through `sandbox-cli exec`, arm64.
