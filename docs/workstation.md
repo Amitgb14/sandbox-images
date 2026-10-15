@@ -70,6 +70,13 @@ Installing needs the network to reach Flathub (`dl.flathub.org`, `flathub.org`)
 and whatever the app downloads. Use `--network open`, or an allowlist naming
 those.
 
+`flatpak` is a small wrapper (`/usr/local/bin/flatpak`) around Debian's. The
+guest runs no system services, so it has no D-Bus system bus, and Flatpak asks
+that bus about parental controls before it installs an app: with no bus at all
+it fails ("Could not connect: No such file or directory"). The wrapper starts a
+private bus for the sandbox user, with nothing on it, and Flatpak then skips the
+check as it does on any machine without parental controls.
+
 Pinta is installed system-wide, in the image: it works with no network at all,
 and the sandbox user can run it but not remove or update it.
 
@@ -82,6 +89,11 @@ and the sandbox user can run it but not remove or update it.
 | `SANDBOX_DESKTOP_SIZE` | `1280x800x24` | the screen at start: width x height x depth |
 | `SANDBOX_DESKTOP_PORT` | `5900` | the VNC port; Studio's tab reaches 5900 only |
 | `SANDBOX_DESKTOP_SESSION` | `xfce` | `openbox` for the desktop image's lighter session |
+
+Running `sandbox-desktop` while a desktop is already up starts nothing: it says
+so and stays in the foreground for as long as that desktop runs. Studio's
+Desktop tab runs it each time it connects, and an agent's tools may have
+started the desktop first.
 
 ## What is different from the desktop image
 
@@ -143,6 +155,15 @@ needs nothing of the kind.
 
 Checked on 2026-10-11, Linux, Firecracker 1.17, guest kernel 6.1.155: the
 desktop started, VNC answered on 127.0.0.1:5900, no setuid files, Pinta opened
-its window, Flathub was set up for the user. Not yet checked: installing from
-Flathub inside a guest (the local `sandboxd` had no network), Studio's
-Desktop tab against this image, arm64.
+its window, Flathub was set up for the user.
+
+Checked on 2026-10-15 in a guest with network (Firecracker, through the
+agentos image): `flatpak install --user` failed for want of a system bus, which
+the wrapper above now provides; with it, GNOME Calculator installed from
+Flathub.
+
+Checked on 2026-10-15 with Studio's Desktop tab on a desktop that was already
+running: each time the tab connected it ran `sandbox-desktop`, which started a
+second XFCE session on the same display ("The notification area lost
+selection"). It now reuses the running desktop, under a lock, and
+tests/smoke.sh checks it. Not yet checked: arm64.

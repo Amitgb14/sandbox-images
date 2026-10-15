@@ -1,0 +1,98 @@
+#!/opt/agentos/venv/bin/python
+"""agentos-acp: the agent, spoken to over the Agent Client Protocol (ACP) on
+stdin and stdout, for an editor or any other ACP client outside the sandbox.
+The client starts it through the sandbox API, which carries stdio:
+
+    sandbox-cli exec <sandbox> -- agentos-acp
+
+Behind it is the ACP project's Claude Code adapter, run on the image's own
+Claude Code, so it has the same settings, MCP servers and instructions as
+`sandbox-cli agent claude` (all in /etc/claude-code). It works with the login
+that `sandbox-cli agent claude --keep ...` restored into HOME.
+
+Between the client and the adapter, this relays every message unchanged but
+two things in a new or loaded session, each of which would otherwise fail:
+
+  - the client's MCP servers are dropped. The image's list is the only one
+    Claude Code may use (managed-mcp.json), and it refuses a session that
+    offers more; and a client's stdio servers are programs on the client's
+    machine, which are not here.
+  - a working directory that does not exist in the sandbox (the client's
+    own project path, as an editor sends) becomes HOME.
+
+Each is said on stderr. stdout is the protocol: nothing else is written to it.
+"""
+import json
+import os
+import subprocess
+import sys
+import threading
+
+ADAPTER = "/opt/agentos/acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
+SESSION_METHODS = ("session/new", "session/load", "session/resume", "session/fork")
+
+
+def log(msg):
+    print(f"agentos-acp: {msg}", file=sys.stderr, flush=True)
+
+
+def adjust(msg):
+    """The client's session request, made one this sandbox can open."""
+    params = msg.get("params")
+    if msg.get("method") not in SESSION_METHODS or not isinstance(params, dict):
+        return msg
+    servers = params.get("mcpServers") or []
+    if servers:
+        log("dropped the client's MCP servers (the image's own are used): "
+            + ", ".join(str(s.get("name")) for s in servers))
+        params["mcpServers"] = []
+    cwd = params.get("cwd")
+    if isinstance(cwd, str) and not os.path.isdir(cwd):
+        log(f"working directory {cwd!r} is not in this sandbox; using {os.environ['HOME']}")
+        params["cwd"] = os.environ["HOME"]
+    return msg
+
+
+def main():
+    home = os.environ.get("HOME", "/sandbox/home")
+    creds = os.path.join(home, ".claude", ".credentials.json")
+    logged_in = os.path.isfile(creds) and os.path.getsize(creds) > 0
+    if not logged_in and not os.environ.get("ANTHROPIC_API_KEY"):
+        log("no Claude login in this sandbox; make one with "
+            "'sandbox-cli agent claude --keep --name <name> --image ... -- --version'")
+    env = dict(os.environ, CLAUDE_CODE_EXECUTABLE="/usr/local/bin/claude")
+    agent = subprocess.Popen(["node", ADAPTER, *sys.argv[1:]], cwd=home, env=env,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+
+    def to_client():
+        # The adapter's messages go back exactly as they came.
+        for line in agent.stdout:
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
+
+    out = threading.Thread(target=to_client, daemon=True)
+    out.start()
+    try:
+        for line in sys.stdin.buffer:
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                agent.stdin.write(line)
+            else:
+                if isinstance(msg, dict) and msg.get("method") in SESSION_METHODS:
+                    line = (json.dumps(adjust(msg)) + "\n").encode()
+                agent.stdin.write(line)
+            agent.stdin.flush()
+    except (BrokenPipeError, KeyboardInterrupt):
+        pass
+    finally:
+        try:
+            agent.stdin.close()
+        except BrokenPipeError:
+            pass
+    out.join()
+    sys.exit(agent.wait())
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,31 @@
+#!/bin/sh
+# flatpak, with a D-Bus system bus to talk to. The guest has none: it runs no
+# init and no system services. Flatpak asks the system bus about parental
+# controls before it installs an app, and when there is no bus at all it fails
+# ("Could not connect: No such file or directory") rather than skipping the
+# check, as it does when the bus is there but the service is not.
+#
+# So, when no system bus is set or present, this starts a private one for the
+# sandbox user, on which there is no such service, and points Flatpak at it.
+# One is started per user and reused; it is a plain dbus-daemon with no
+# privileges, and nothing else uses it.
+if [ -z "${DBUS_SYSTEM_BUS_ADDRESS:-}" ] && [ ! -S /run/dbus/system_bus_socket ]; then
+  dir=${XDG_RUNTIME_DIR:-/tmp/runtime-$(id -u)}
+  mkdir -p -m 0700 "$dir"
+  sock=$dir/flatpak-system-bus
+  ping() {
+    dbus-send --bus="unix:path=$sock" --dest=org.freedesktop.DBus --print-reply \
+      / org.freedesktop.DBus.Peer.Ping >/dev/null 2>&1
+  }
+  if ! ping; then
+    (
+      flock 9
+      if ! ping; then
+        rm -f "$sock"
+        dbus-daemon --session --fork --nopidfile --address="unix:path=$sock" >/dev/null
+      fi
+    ) 9>"$dir/flatpak-system-bus.lock"
+  fi
+  export DBUS_SYSTEM_BUS_ADDRESS="unix:path=$sock"
+fi
+exec /usr/bin/flatpak "$@"

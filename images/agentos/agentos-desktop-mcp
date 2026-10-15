@@ -1,0 +1,324 @@
+#!/opt/agentos/venv/bin/python
+"""agentos-desktop-mcp: an MCP server (stdio) that gives an agent the sandbox's
+desktop — it sees the screen and uses the mouse, the keyboard, the windows and
+the clipboard. Every action is an X client on the display sandbox-desktop
+serves (:1), run as the sandbox user like everything else in the guest.
+
+It starts the desktop itself when no display is up, so an agent that has this
+server has a desktop, whatever started the agent.
+
+Coordinates are in the pixels of the last screenshot, which is scaled down to
+AGENTOS_SCREENSHOT_WIDTH (default 1280) when the screen is wider; the server
+scales them back to the screen.
+
+  agentos-desktop-mcp                   serve MCP on stdin and stdout
+  agentos-desktop-mcp --ensure-desktop  start the desktop if needed, then exit
+"""
+import fcntl
+import glob
+import io
+import os
+import shlex
+import subprocess
+import sys
+import time
+
+DISPLAY = ":1"
+MAX_WIDTH = int(os.environ.get("AGENTOS_SCREENSHOT_WIDTH", "1280"))
+BUTTONS = {"left": "1", "middle": "2", "right": "3"}
+SCROLL = {"up": "4", "down": "5", "left": "6", "right": "7"}
+
+
+def base_env():
+    env = dict(os.environ, DISPLAY=DISPLAY)
+    env.setdefault("XDG_RUNTIME_DIR", f"/tmp/runtime-{os.getuid()}")
+    return env
+
+
+def session_env():
+    """The desktop session's own environment (its D-Bus, its XDG_DATA_DIRS),
+    so what this server starts belongs to the session, as if started from its
+    menu. Without an XFCE session, this process's environment and the display."""
+    env = base_env()
+    pid = subprocess.run(["pgrep", "-u", str(os.getuid()), "-x", "xfce4-session"],
+                         capture_output=True, text=True).stdout.split()
+    if pid:
+        try:
+            with open(f"/proc/{pid[0]}/environ", "rb") as f:
+                for item in f.read().split(b"\0"):
+                    k, sep, v = item.decode(errors="replace").partition("=")
+                    if sep:
+                        env[k] = v
+        except OSError:
+            pass
+    env["DISPLAY"] = DISPLAY
+    return env
+
+
+def run(*args, input=None, timeout=15):
+    p = subprocess.run(list(args), input=input, capture_output=True, text=True,
+                       env=base_env(), timeout=timeout)
+    if p.returncode != 0:
+        raise RuntimeError(f"{args[0]}: {(p.stderr or p.stdout).strip() or f'exit {p.returncode}'}")
+    return p.stdout
+
+
+def display_up():
+    return subprocess.run(["xdpyinfo"], env=base_env(), stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0
+
+
+def ensure_desktop(timeout=60):
+    """Start sandbox-desktop in its own session when no display answers, and
+    wait for a window manager. It outlives this server, as it would if Studio
+    had started it.
+
+    The agent starts its MCP servers together, and each of them comes here:
+    a lock makes the first start the desktop and the others wait for it.
+    Without it, two would find no display, and the second sandbox-desktop,
+    whose Xvnc fails, would find the first's display and start a second
+    session on it."""
+    with open(f"/tmp/agentos-desktop-{os.getuid()}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not display_up():
+            log = open(f"/tmp/agentos-desktop-{os.getuid()}.log", "ab")
+            subprocess.Popen(["sandbox-desktop"], stdin=subprocess.DEVNULL, stdout=log,
+                             stderr=log, start_new_session=True)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if display_up() and subprocess.run(["wmctrl", "-m"], env=base_env(),
+                                               capture_output=True).returncode == 0:
+                return
+            time.sleep(0.5)
+    raise RuntimeError("the desktop did not start; see /tmp/agentos-desktop-*.log")
+
+
+def screen_size():
+    w, h = run("xdotool", "getdisplaygeometry").split()
+    return int(w), int(h)
+
+
+def scale():
+    w, _ = screen_size()
+    return max(1.0, w / MAX_WIDTH)
+
+
+def to_screen(x, y):
+    s = scale()
+    return str(round(x * s)), str(round(y * s))
+
+
+def windows():
+    try:
+        active = int(run("xdotool", "getactivewindow").strip())
+    except RuntimeError:
+        active = None
+    out = []
+    for line in run("wmctrl", "-lp").splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        wid = parts[0]
+        out.append({"id": wid, "pid": int(parts[2]), "title": parts[4] if len(parts) > 4 else "",
+                    "active": int(wid, 16) == active})
+    return out
+
+
+def find_window(window):
+    for w in windows():
+        if w["id"] == window:
+            return w
+    matches = [w for w in windows() if window.lower() in w["title"].lower()]
+    if not matches:
+        raise RuntimeError(f"no window titled like {window!r}")
+    return matches[0]
+
+
+def desktop_entries():
+    dirs = session_env().get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":")
+    dirs.insert(0, os.path.expanduser("~/.local/share"))
+    entries = {}
+    for d in dirs:
+        for path in glob.glob(os.path.join(d, "applications", "*.desktop")):
+            app_id = os.path.basename(path)[: -len(".desktop")]
+            if app_id in entries:
+                continue
+            name = exec_line = None
+            hidden = False
+            section = None
+            with open(path, errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("["):
+                        section = line
+                    elif section == "[Desktop Entry]":
+                        if line.startswith("Name=") and name is None:
+                            name = line[5:]
+                        elif line.startswith("Exec=") and exec_line is None:
+                            exec_line = line[5:]
+                        elif line in ("NoDisplay=true", "Hidden=true"):
+                            hidden = True
+            if name and exec_line and not hidden:
+                entries[app_id] = {"id": app_id, "name": name, "exec": exec_line}
+    return entries
+
+
+def launch(argv):
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, env=session_env(), start_new_session=True)
+
+
+def serve():
+    from mcp.server.fastmcp import FastMCP, Image
+    from PIL import Image as PILImage, ImageGrab
+
+    mcp = FastMCP("agentos-desktop", log_level="WARNING", instructions=(
+        "The sandbox's Linux desktop (XFCE on X display :1). Take a screenshot before "
+        "acting and after each action to check what happened. Coordinates are pixels "
+        "of the last screenshot. For web pages, prefer the browser tools if you have them."))
+
+    @mcp.tool()
+    def screenshot(save_to: str = "") -> list:
+        """See the whole screen. Returns a PNG; x and y in the other tools are its pixels.
+        save_to: also write the full-size PNG to this path (e.g. ~/agentos-output/screen.png)."""
+        img = ImageGrab.grab(xdisplay=DISPLAY)
+        w, h = img.size
+        saved = ""
+        if save_to:
+            path = os.path.expanduser(save_to)
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            img.save(path, format="PNG")
+            saved = f", saved to {path}"
+        s = max(1.0, w / MAX_WIDTH)
+        if s > 1:
+            img = img.resize((round(w / s), round(h / s)), PILImage.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return [f"screen {w}x{h}, image {img.size[0]}x{img.size[1]}{saved}", Image(data=buf.getvalue(), format="png")]
+
+    @mcp.tool()
+    def click(x: int, y: int, button: str = "left", clicks: int = 1) -> str:
+        """Click at (x, y). button: left, middle or right; clicks: 2 for a double click."""
+        sx, sy = to_screen(x, y)
+        run("xdotool", "mousemove", "--sync", sx, sy, "click", "--repeat", str(clicks),
+            "--delay", "80", BUTTONS[button])
+        return f"clicked {button} x{clicks} at {x},{y}"
+
+    @mcp.tool()
+    def move_mouse(x: int, y: int) -> str:
+        """Move the pointer to (x, y) without clicking, e.g. to hover."""
+        run("xdotool", "mousemove", "--sync", *to_screen(x, y))
+        return f"moved to {x},{y}"
+
+    @mcp.tool()
+    def drag(x1: int, y1: int, x2: int, y2: int, button: str = "left") -> str:
+        """Press at (x1, y1), move to (x2, y2), release."""
+        b = BUTTONS[button]
+        run("xdotool", "mousemove", "--sync", *to_screen(x1, y1), "mousedown", b,
+            "mousemove", "--sync", *to_screen(x2, y2), "mouseup", b)
+        return f"dragged {x1},{y1} to {x2},{y2}"
+
+    @mcp.tool()
+    def scroll(x: int, y: int, direction: str = "down", amount: int = 3) -> str:
+        """Scroll at (x, y). direction: up, down, left or right; amount: wheel steps."""
+        run("xdotool", "mousemove", "--sync", *to_screen(x, y), "click", "--repeat",
+            str(amount), "--delay", "40", SCROLL[direction])
+        return f"scrolled {direction} {amount} at {x},{y}"
+
+    @mcp.tool()
+    def type_text(text: str) -> str:
+        """Type text into the focused window, as from a keyboard."""
+        run("xdotool", "type", "--delay", "12", "--", text, timeout=60 + len(text) // 20)
+        return f"typed {len(text)} characters"
+
+    @mcp.tool()
+    def key(keys: str) -> str:
+        """Press keys, xdotool names: 'Return', 'ctrl+l', 'alt+F4', or several separated by spaces."""
+        run("xdotool", "key", "--delay", "40", "--", *keys.split())
+        return f"pressed {keys}"
+
+    @mcp.tool()
+    def cursor_position() -> dict:
+        """Where the pointer is, in screenshot pixels."""
+        pos = dict(l.split("=", 1) for l in run("xdotool", "getmouselocation", "--shell").split())
+        s = scale()
+        return {"x": round(int(pos["X"]) / s), "y": round(int(pos["Y"]) / s)}
+
+    @mcp.tool()
+    def list_windows() -> list:
+        """The open windows: id, title, process id, and which one has focus."""
+        return windows()
+
+    @mcp.tool()
+    def focus_window(window: str) -> str:
+        """Bring a window to the front and focus it, by id or by part of its title."""
+        w = find_window(window)
+        run("wmctrl", "-i", "-a", w["id"])
+        return f"focused {w['title']!r}"
+
+    @mcp.tool()
+    def close_window(window: str) -> str:
+        """Close a window gracefully, by id or by part of its title."""
+        w = find_window(window)
+        run("wmctrl", "-i", "-c", w["id"])
+        return f"closed {w['title']!r}"
+
+    @mcp.tool()
+    def wait_for_window(title: str, timeout: int = 30) -> str:
+        """Wait until a window whose title contains `title` appears."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for w in windows():
+                if title.lower() in w["title"].lower():
+                    return f"window {w['id']} {w['title']!r}"
+            time.sleep(0.5)
+        raise RuntimeError(f"no window titled like {title!r} after {timeout}s")
+
+    @mcp.tool()
+    def list_apps() -> list:
+        """The desktop's applications (menu entries, Flatpak apps included): id and name."""
+        return [{"id": e["id"], "name": e["name"]} for e in sorted(desktop_entries().values(), key=lambda e: e["name"].lower())]
+
+    @mcp.tool()
+    def open_app(app: str) -> str:
+        """Start an application by its id or name, as from the menu (see list_apps)."""
+        entries = desktop_entries()
+        e = entries.get(app) or next((e for e in entries.values() if e["name"].lower() == app.lower()), None) \
+            or next((e for e in entries.values() if app.lower() in e["name"].lower()), None)
+        if not e:
+            raise RuntimeError(f"no application like {app!r}; see list_apps")
+        # Field codes (%U, %f, …) stand for files to open; there are none.
+        argv = [a for a in shlex.split(e["exec"]) if not (len(a) == 2 and a[0] == "%")]
+        launch(argv)
+        return f"started {e['name']} ({e['id']})"
+
+    @mcp.tool()
+    def open_url(url: str) -> str:
+        """Open a URL or a file in its default application (web pages: Chromium)."""
+        launch(["xdg-open", url])
+        return f"opened {url}"
+
+    @mcp.tool()
+    def clipboard_get() -> str:
+        """The clipboard's text."""
+        try:
+            return run("xclip", "-selection", "clipboard", "-o")
+        except RuntimeError:
+            return ""
+
+    @mcp.tool()
+    def clipboard_set(text: str) -> str:
+        """Put text on the clipboard."""
+        # xclip stays behind to serve the selection, so its output is not waited for.
+        subprocess.run(["xclip", "-selection", "clipboard", "-i"], input=text, text=True,
+                       env=base_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        return f"clipboard set ({len(text)} characters)"
+
+    mcp.run()
+
+
+if __name__ == "__main__":
+    ensure_desktop()
+    if sys.argv[1:] == ["--ensure-desktop"]:
+        sys.exit(0)
+    serve()

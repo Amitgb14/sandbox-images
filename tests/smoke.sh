@@ -30,6 +30,17 @@ echo "smoke: programs"
   test -s /usr/share/sandbox-workstation/flathub.flatpakrepo || { echo "missing: flathub.flatpakrepo"; exit 1; }
 ' || fail "a program is missing"
 
+echo "smoke: flatpak has a system bus to ask"
+# The container, like the guest, has no system bus; the wrapper starts one.
+"$engine" run --rm --user 1001:1001 "$image" sh -c '
+  [ "$(command -v flatpak)" = /usr/local/bin/flatpak ] || { echo "flatpak is not the wrapper"; exit 1; }
+  flatpak --version >/dev/null && flatpak --version >/dev/null
+  n=$(pgrep -u 1001 -c -x dbus-daemon)
+  [ "$n" -eq 1 ] || { echo "$n private system buses"; exit 1; }
+  dbus-send --bus="unix:path=/tmp/runtime-1001/flatpak-system-bus" --dest=org.freedesktop.DBus \
+    --print-reply / org.freedesktop.DBus.Peer.Ping >/dev/null || { echo "the bus does not answer"; exit 1; }
+' || fail "flatpak would have no system bus"
+
 echo "smoke: no setuid or setgid files"
 n=$("$engine" run --rm "$image" sh -c 'find / -xdev -type f -perm /6000 2>/dev/null | wc -l')
 [ "$n" -eq 0 ] || fail "$n setuid or setgid files"
@@ -58,5 +69,17 @@ sleep 5
     echo "5900 listens beyond loopback"; exit 1
   fi
 ' || { "$engine" logs "$name" >&2; fail "the desktop is not right"; }
+
+echo "smoke: starting it again reuses the running desktop"
+# As Studio's Desktop tab does each time it connects.
+"$engine" exec "$name" sh -c '
+  sandbox-desktop >/tmp/again.log 2>&1 & again=$!
+  sleep 5
+  kill -0 $again 2>/dev/null || { echo "the second start did not stay up"; cat /tmp/again.log; exit 1; }
+  grep -q "already running" /tmp/again.log || { echo "the second start did not say so"; cat /tmp/again.log; exit 1; }
+  n=$(pgrep -u 1001 -c -x xfce4-session)
+  [ "$n" -eq 1 ] || { echo "$n desktop sessions"; exit 1; }
+  kill $again
+' || fail "a second start is not right"
 
 echo "smoke: ok"

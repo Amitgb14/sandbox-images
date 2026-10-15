@@ -1,0 +1,15 @@
+{
+  "skipDangerousModePermissionPrompt": true,
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "deny": [
+      "Read(~/.claude/**)",
+      "Read(~/.claude.json)",
+      "Edit(~/.claude/**)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf ~/)",
+      "Bash(rm -rf $HOME)",
+      "Bash(rm -rf /sandbox/home)"
+    ]
+  }
+}
