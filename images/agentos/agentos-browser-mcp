@@ -1,0 +1,17 @@
+#!/bin/sh
+# agentos-browser-mcp: Playwright's MCP server (stdio), driving the image's
+# Chromium on the sandbox's desktop, so the agent works web pages through the
+# page itself rather than through pixels, and you watch it happen in the
+# Desktop tab. The desktop is started first if it is not up.
+#
+# --sandbox: Playwright turns Chromium's sandbox off unless told otherwise;
+# Debian's launcher turns it off by itself where user namespaces are missing
+# (a container), and leaves it on in a guest, where they are not.
+# The profile is kept in HOME, so logins made in it last as the sandbox does.
+set -eu
+/usr/local/bin/agentos-desktop-mcp --ensure-desktop
+export DISPLAY=:1
+exec /opt/agentos/browser/node_modules/.bin/playwright-mcp \
+  --browser chromium --executable-path /usr/bin/chromium --sandbox \
+  --user-data-dir "$HOME/.cache/agentos/browser" \
+  --output-dir "$HOME/agentos-output" "$@"

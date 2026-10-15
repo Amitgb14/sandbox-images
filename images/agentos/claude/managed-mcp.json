@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "desktop": {
+      "type": "stdio",
+      "command": "/usr/local/bin/agentos-desktop-mcp"
+    },
+    "browser": {
+      "type": "stdio",
+      "command": "/usr/local/bin/agentos-browser-mcp"
+    }
+  }
+}
