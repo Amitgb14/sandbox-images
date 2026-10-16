@@ -11,6 +11,9 @@
 #                         and other ACP clients outside the sandbox
 #   /etc/claude-code/     managed settings: no permission prompts, a few deny
 #                         rules, both MCP servers, and the agent's instructions
+#   /etc/agentos/         manifest.json: what a client such as Studio may rely
+#                         on (the agents and their ACP commands, the desktop,
+#                         the output directory); see docs/agentos.md
 #
 # The settings live in /etc, not in HOME, because `sandbox-cli agent` restores
 # the agent's own login into HOME at the start of a run. No key or login is
@@ -19,6 +22,11 @@
 # Built in CI only, on top of the workstation image from this repository.
 ARG BASE=ghcr.io/amitgb14/sandbox-workstation:edge
 FROM ${BASE}
+
+# The version of the contract in /etc/agentos/manifest.json, readable from the
+# image config before any sandbox exists. Raised only when something a client
+# depends on changes incompatibly; keep it equal to the manifest's "contract".
+LABEL io.sandbox.agentos.contract="1"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       # Input and windows on the X display.
@@ -56,10 +64,11 @@ RUN npm install --prefix /opt/agentos/acp --omit=dev --omit=optional --no-audit 
 
 COPY agentos-desktop-mcp agentos-browser-mcp agentos-acp /usr/local/bin/
 COPY claude/managed-settings.json claude/managed-mcp.json claude/CLAUDE.md /etc/claude-code/
+COPY agentos/manifest.json /etc/agentos/
 
 RUN chmod 0755 /usr/local/bin/agentos-desktop-mcp /usr/local/bin/agentos-browser-mcp \
       /usr/local/bin/agentos-acp \
-    && chmod 0644 /etc/claude-code/* \
+    && chmod 0644 /etc/claude-code/* /etc/agentos/manifest.json \
     # As in the workstation image: nothing setuid or setgid, including what
     # the packages above brought.
     && find / -xdev -type f -perm /6000 -exec chmod ug-s {} +

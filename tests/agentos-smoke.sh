@@ -37,6 +37,20 @@ assert set(m[\"mcpServers\"]) == {\"desktop\", \"browser\"}, m
 "
 ' || fail "a program or a setting is missing"
 
+echo "smoke: the manifest a client reads"
+label=$("$engine" image inspect -f '{{index .Config.Labels "io.sandbox.agentos.contract"}}' "$image")
+"$engine" run --rm --user 1001:1001 "$image" /opt/agentos/venv/bin/python -I -c "
+import json, shutil
+m = json.load(open('/etc/agentos/manifest.json'))
+assert str(m['contract']) == '$label', ('label', '$label', 'manifest', m['contract'])
+assert m['agents'] and len({a['id'] for a in m['agents']}) == len(m['agents']), m['agents']
+for a in m['agents']:
+    assert {'id', 'name', 'acp', 'login', 'defaultMode'} <= set(a), a
+    assert shutil.which(a['acp'][0]), ('no ACP command', a)
+assert shutil.which(m['desktop']['start'][0]), m['desktop']
+assert m['desktop']['vncPort'] == 5900, m['desktop']
+" || fail "the manifest does not match the label or the image"
+
 echo "smoke: no setuid or setgid files"
 n=$("$engine" run --rm "$image" sh -c 'find / -xdev -type f -perm /6000 2>/dev/null | wc -l')
 [ "$n" -eq 0 ] || fail "$n setuid or setgid files"

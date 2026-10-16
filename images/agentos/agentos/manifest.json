@@ -1,0 +1,17 @@
+{
+  "contract": 1,
+  "agents": [
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "acp": ["agentos-acp"],
+      "login": "claude",
+      "defaultMode": "bypassPermissions"
+    }
+  ],
+  "desktop": {
+    "vncPort": 5900,
+    "start": ["sandbox-desktop"]
+  },
+  "outputDir": "~/agentos-output"
+}

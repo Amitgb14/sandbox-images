@@ -16,6 +16,7 @@ work on its own:
 | Browser | Playwright's MCP server, driving the image's Chromium on the same desktop | `agentos-browser-mcp` |
 | ACP | The agent over the Agent Client Protocol, for editors and other clients outside the sandbox | `agentos-acp` |
 | Settings | No permission prompts, a few deny rules, both MCP servers, the agent's instructions | `/etc/claude-code/` |
+| Manifest | What a client such as Studio may rely on: agents, ACP commands, desktop, output directory | `/etc/agentos/manifest.json` |
 
 Everything in the workstation image is here too: XFCE, Thunar, Chromium, Pinta,
 Flatpak with Flathub.
@@ -94,6 +95,45 @@ stderr:
 - **A working directory the sandbox does not have** (an editor sends its own
   project's path) becomes HOME. Clone the project into the sandbox, or ask the
   agent to.
+
+## For clients: the manifest
+
+A client such as Studio should not recognise an agentos sandbox by its image
+name, which forks, mirrors and local builds change. Two things say what the
+image offers instead:
+
+- **The label** `io.sandbox.agentos.contract` on the image config: the contract
+  version, readable before any sandbox exists.
+- **`/etc/agentos/manifest.json`** in the image, read with
+  `sandbox-cli exec <name> -- cat /etc/agentos/manifest.json`:
+
+```json
+{
+  "contract": 1,
+  "agents": [
+    {"id": "claude", "name": "Claude Code", "acp": ["agentos-acp"],
+     "login": "claude", "defaultMode": "bypassPermissions"}
+  ],
+  "desktop": {"vncPort": 5900, "start": ["sandbox-desktop"]},
+  "outputDir": "~/agentos-output"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `contract` | The contract version, equal to the label |
+| `agents[].id` | A stable id for the agent |
+| `agents[].acp` | The command to `exec` for an ACP session over stdio |
+| `agents[].login` | The agent name `sandbox-cli agent` restores the login for |
+| `agents[].defaultMode` | The ACP session mode a new session starts in |
+| `desktop.vncPort` | VNC, on the sandbox's loopback only, no password |
+| `desktop.start` | Starts the desktop, or reuses a running one |
+| `outputDir` | Where the agent saves files for the person, under HOME |
+
+The contract version goes up only when something a client relies on changes
+incompatibly: an entry point renamed or removed, the VNC port, the output
+directory, or what `agentos-acp` does to a session. Adding an agent to the list
+does not raise it; a client reads the list and shows what is there.
 
 ## How it works on its own
 
