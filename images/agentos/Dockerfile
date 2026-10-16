@@ -1,22 +1,28 @@
-# The agentos image: the workstation image, with an agent that uses its
-# desktop. Claude Code is already in the image (from the base image); this adds
-# what lets it see and work the desktop, and the settings that let it work on
-# its own:
+# The agentos image: the workstation image, with agents that use its desktop.
+# Claude Code, Gemini CLI, opencode and Codex are already in the image (from
+# the base image); this adds what lets them see and work the desktop, and the
+# settings that let them work on their own:
 #
 #   agentos-desktop-mcp   an MCP server for the desktop: screenshots, mouse,
 #                         keyboard, windows, applications, the clipboard
 #   agentos-browser-mcp   Playwright's MCP server, driving the image's Chromium
 #                         on that same desktop
-#   agentos-acp           the agent over the Agent Client Protocol, for editors
-#                         and other ACP clients outside the sandbox
-#   /etc/claude-code/     managed settings: no permission prompts, a few deny
-#                         rules, both MCP servers, and the agent's instructions
-#   /etc/agentos/         manifest.json: what a client such as Studio may rely
-#                         on (the agents and their ACP commands, the desktop,
-#                         the output directory); see docs/agentos.md
+#   agentos-acp           an agent over the Agent Client Protocol, for Studio,
+#                         editors and other ACP clients outside the sandbox
+#   /etc/agentos/         AGENTS.md, the agents' instructions; manifest.json,
+#                         what a client such as Studio may rely on (the agents
+#                         and their ACP commands, the desktop, the output
+#                         directory); see docs/agentos.md
+#   each agent's system-wide settings: both MCP servers, the instructions, no
+#   permission prompts
+#     /etc/claude-code/   managed settings, with a few deny rules
+#     /etc/gemini-cli/    system settings (over the user's)
+#     /etc/codex/         system config, below the user's
+#     /etc/opencode/      the config OPENCODE_CONFIG names, merged over the user's
 #
 # The settings live in /etc, not in HOME, because `sandbox-cli agent` restores
-# the agent's own login into HOME at the start of a run. No key or login is
+# the agent's own login into HOME at the start of a run, and for Gemini that
+# includes ~/.gemini/settings.json. No key or login is
 # ever in the image.
 #
 # Built in CI only, on top of the workstation image from this repository.
@@ -58,17 +64,42 @@ RUN npm install --prefix /opt/agentos/browser --omit=dev --no-audit --no-fund \
 # The ACP adapter (Zed's, now the ACP project's), pinned. It runs the image's
 # own Claude Code (CLAUDE_CODE_EXECUTABLE, set by agentos-acp), so the copy of
 # Claude Code its SDK would bring as an optional dependency is left out.
+#
+# The ACP project's Codex adapter, the same way: it runs the image's own codex
+# (CODEX_PATH, set by agentos-acp), so the platform build of codex its
+# dependency would bring is left out. Gemini CLI and opencode speak ACP
+# themselves.
 ARG CLAUDE_AGENT_ACP=0.84.0
+ARG CODEX_ACP=2.1.1
 RUN npm install --prefix /opt/agentos/acp --omit=dev --omit=optional --no-audit --no-fund \
-      "@agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP}"
+      "@agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP}" \
+      "@agentclientprotocol/codex-acp@${CODEX_ACP}"
+
+# opencode has no system-wide file of its own; this is the one it reads.
+ENV OPENCODE_CONFIG=/etc/opencode/opencode.json
 
 COPY agentos-desktop-mcp agentos-browser-mcp agentos-acp /usr/local/bin/
-COPY claude/managed-settings.json claude/managed-mcp.json claude/CLAUDE.md /etc/claude-code/
-COPY agentos/manifest.json /etc/agentos/
+COPY agentos/AGENTS.md agentos/manifest.json /etc/agentos/
+COPY claude/managed-settings.json claude/managed-mcp.json /etc/claude-code/
+COPY gemini/settings.json /etc/gemini-cli/
+COPY codex/config.toml.in /tmp/codex-config.toml.in
+COPY opencode/opencode.json /etc/opencode/
+
+# One set of instructions for every agent: Claude Code reads its CLAUDE.md,
+# Gemini CLI a directory it loads context files from, opencode the path in its
+# config, and Codex its config, which carries them inline.
+RUN cp /etc/agentos/AGENTS.md /etc/claude-code/CLAUDE.md \
+    && mkdir -p /etc/agentos/context /etc/codex \
+    && cp /etc/agentos/AGENTS.md /etc/agentos/context/AGENTS.md \
+    && /opt/agentos/venv/bin/python -I -c 'import json, sys; t = open(sys.argv[1]).read(); \
+open(sys.argv[3], "w").write(t.replace("@INSTRUCTIONS@", json.dumps(open(sys.argv[2]).read())))' \
+         /tmp/codex-config.toml.in /etc/agentos/AGENTS.md /etc/codex/config.toml \
+    && rm /tmp/codex-config.toml.in
 
 RUN chmod 0755 /usr/local/bin/agentos-desktop-mcp /usr/local/bin/agentos-browser-mcp \
       /usr/local/bin/agentos-acp \
-    && chmod 0644 /etc/claude-code/* /etc/agentos/manifest.json \
+    && chmod 0644 /etc/claude-code/* /etc/gemini-cli/* /etc/codex/* /etc/opencode/* \
+         /etc/agentos/AGENTS.md /etc/agentos/manifest.json /etc/agentos/context/AGENTS.md \
     # As in the workstation image: nothing setuid or setgid, including what
     # the packages above brought.
     && find / -xdev -type f -perm /6000 -exec chmod ug-s {} +

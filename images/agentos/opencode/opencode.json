@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "instructions": ["/etc/agentos/AGENTS.md"],
+  "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
+  "mcp": {
+    "desktop": {"type": "local", "command": ["/usr/local/bin/agentos-desktop-mcp"], "enabled": true, "timeout": 120000},
+    "browser": {"type": "local", "command": ["/usr/local/bin/agentos-browser-mcp"], "enabled": true, "timeout": 120000}
+  }
+}

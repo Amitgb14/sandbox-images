@@ -1,22 +1,26 @@
 #!/opt/agentos/venv/bin/python
-"""agentos-acp: the agent, spoken to over the Agent Client Protocol (ACP) on
-stdin and stdout, for an editor or any other ACP client outside the sandbox.
-The client starts it through the sandbox API, which carries stdio:
+"""agentos-acp: an agent, spoken to over the Agent Client Protocol (ACP) on
+stdin and stdout, for Studio, an editor or any other ACP client outside the
+sandbox. The client starts it through the sandbox API, which carries stdio:
 
-    sandbox-cli exec <sandbox> -- agentos-acp
+    sandbox-cli exec <sandbox> -- agentos-acp [--agent claude|gemini|opencode|codex]
 
-Behind it is the ACP project's Claude Code adapter, run on the image's own
-Claude Code, so it has the same settings, MCP servers and instructions as
-`sandbox-cli agent claude` (all in /etc/claude-code). It works with the login
-that `sandbox-cli agent claude --keep ...` restored into HOME.
+Each agent is the image's own, with the same settings, MCP servers and
+instructions as `sandbox-cli agent <name>` (/etc/agentos/manifest.json lists
+them), and the login `sandbox-cli agent <name> --keep ...` restored into HOME:
 
-Between the client and the adapter, this relays every message unchanged but
+  claude    the ACP project's Claude Code adapter, on the image's Claude Code
+  gemini    Gemini CLI's own ACP mode, auto-approving (--yolo)
+  opencode  opencode's own ACP mode
+  codex     the ACP project's Codex adapter, on the image's Codex
+
+Between the client and the agent, this relays every message unchanged but
 two things in a new or loaded session, each of which would otherwise fail:
 
-  - the client's MCP servers are dropped. The image's list is the only one
-    Claude Code may use (managed-mcp.json), and it refuses a session that
-    offers more; and a client's stdio servers are programs on the client's
-    machine, which are not here.
+  - the client's MCP servers are dropped. The image's are the agent's own; a
+    client's stdio servers are programs on the client's machine, which are
+    not here; and Claude Code refuses a session that offers more than its
+    managed list.
   - a working directory that does not exist in the sandbox (the client's
     own project path, as an editor sends) becomes HOME.
 
@@ -28,7 +32,39 @@ import subprocess
 import sys
 import threading
 
-ADAPTER = "/opt/agentos/acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
+ACP = "/opt/agentos/acp/node_modules/@agentclientprotocol"
+
+# Each agent: the command that speaks ACP, what it adds to the environment,
+# the login file sandbox-cli restores and the keys that stand in for one.
+AGENTS = {
+    "claude": {
+        "argv": ["node", f"{ACP}/claude-agent-acp/dist/index.js"],
+        "env": {"CLAUDE_CODE_EXECUTABLE": "/usr/local/bin/claude"},
+        "login": [".claude/.credentials.json"],
+        "keys": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+    },
+    "gemini": {
+        # YOLO can only be asked for on the command line, not in settings.
+        "argv": ["gemini", "--acp", "--yolo"],
+        "env": {},
+        "login": [".gemini/oauth_creds.json"],
+        "keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI"],
+    },
+    "opencode": {
+        "argv": ["opencode", "acp"],
+        "env": {},
+        "login": [".local/share/opencode/auth.json"],
+        "keys": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY"],
+    },
+    "codex": {
+        "argv": ["node", f"{ACP}/codex-acp/dist/index.js"],
+        # The image's codex, not a second copy; no prompts, as the image's
+        # other agents; and no browser login, which a sandbox cannot open.
+        "env": {"CODEX_PATH": "/usr/local/bin/codex", "INITIAL_AGENT_MODE": "agent-full-access", "NO_BROWSER": "1"},
+        "login": [".codex/auth.json"],
+        "keys": ["CODEX_API_KEY", "OPENAI_API_KEY"],
+    },
+}
 SESSION_METHODS = ("session/new", "session/load", "session/resume", "session/fork")
 
 
@@ -54,14 +90,25 @@ def adjust(msg):
 
 
 def main():
+    args = sys.argv[1:]
+    name = "claude"
+    if args[:1] == ["--agent"] and len(args) > 1:
+        name, args = args[1], args[2:]
+    elif args[:1] and args[0].startswith("--agent="):
+        name, args = args[0].split("=", 1)[1], args[1:]
+    spec = AGENTS.get(name)
+    if spec is None:
+        log(f"no agent {name!r}; this image has {', '.join(AGENTS)}")
+        sys.exit(2)
     home = os.environ.get("HOME", "/sandbox/home")
-    creds = os.path.join(home, ".claude", ".credentials.json")
-    logged_in = os.path.isfile(creds) and os.path.getsize(creds) > 0
-    if not logged_in and not os.environ.get("ANTHROPIC_API_KEY"):
-        log("no Claude login in this sandbox; make one with "
-            "'sandbox-cli agent claude --keep --name <name> --image ... -- --version'")
-    env = dict(os.environ, CLAUDE_CODE_EXECUTABLE="/usr/local/bin/claude")
-    agent = subprocess.Popen(["node", ADAPTER, *sys.argv[1:]], cwd=home, env=env,
+    logged_in = any(os.path.isfile(p) and os.path.getsize(p) > 0
+                    for p in (os.path.join(home, f) for f in spec["login"]))
+    if not logged_in and not any(os.environ.get(k) for k in spec["keys"]):
+        log(f"no {name} login in this sandbox; make one with "
+            f"'sandbox-cli agent {name} --keep --name <name> --image ... -- --version', "
+            f"or log in from a shell in the sandbox")
+    env = dict(os.environ, **spec["env"])
+    agent = subprocess.Popen([*spec["argv"], *args], cwd=home, env=env,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
 
     def to_client():

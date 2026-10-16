@@ -8,6 +8,7 @@ its tool calls, its messages, and any permission it asks for.
   acp-client.py [--handshake] [--prompt TEXT] [--deny] [--timeout S] -- COMMAND...
 
   --handshake   initialize and open a session, then stop (no model call)
+  --init-only   initialize only, then stop (for an agent with no login here)
   --prompt      the task to send (default: a short one)
   --deny        refuse permission requests (default: allow once)
   --mode        switch the session to this mode first (e.g. default: ask)
@@ -32,6 +33,7 @@ import time
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--handshake", action="store_true")
+    ap.add_argument("--init-only", action="store_true")
     ap.add_argument("--prompt", default="Say hello, then list the windows open on the desktop.")
     ap.add_argument("--deny", action="store_true")
     ap.add_argument("--timeout", type=float, default=600)
@@ -119,6 +121,10 @@ def main():
     print(f"initialize: protocol {init.get('protocolVersion')}, "
           f"agent {json.dumps(init.get('agentInfo', {}))}, "
           f"auth methods {[m.get('id') for m in init.get('authMethods', [])]}")
+    if a.init_only:
+        p.stdin.close()
+        p.wait(timeout=30)
+        return
     servers = [{"name": n, "command": c, "args": [], "env": []}
                for n, c in (m.split("=", 1) for m in a.client_mcp)]
     sess = call("session/new", {"cwd": a.cwd, "mcpServers": servers})

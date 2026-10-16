@@ -1,0 +1,20 @@
+# Codex's system-wide settings in the agentos image (/etc/codex/config.toml),
+# below the user's own ~/.codex/config.toml. Written at build time: the
+# instructions are /etc/agentos/AGENTS.md, inlined below.
+
+# No approval prompts and no inner sandbox: the VM is the boundary, as for
+# the image's other agents.
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+developer_instructions = @INSTRUCTIONS@
+
+[mcp_servers.desktop]
+command = "/usr/local/bin/agentos-desktop-mcp"
+startup_timeout_sec = 120
+tool_timeout_sec = 120
+
+[mcp_servers.browser]
+command = "/usr/local/bin/agentos-browser-mcp"
+startup_timeout_sec = 120
+tool_timeout_sec = 120

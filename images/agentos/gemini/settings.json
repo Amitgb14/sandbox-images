@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "desktop": {"command": "/usr/local/bin/agentos-desktop-mcp", "trust": true, "timeout": 120000},
+    "browser": {"command": "/usr/local/bin/agentos-browser-mcp", "trust": true, "timeout": 120000}
+  },
+  "context": {
+    "fileName": ["GEMINI.md", "AGENTS.md"],
+    "includeDirectories": ["/etc/agentos/context"],
+    "loadMemoryFromIncludeDirectories": true
+  },
+  "security": {
+    "folderTrust": {"enabled": false}
+  },
+  "general": {
+    "enableAutoUpdate": false
+  }
+}

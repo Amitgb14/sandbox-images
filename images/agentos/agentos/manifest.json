@@ -4,14 +4,51 @@
     {
       "id": "claude",
       "name": "Claude Code",
-      "acp": ["agentos-acp"],
+      "acp": [
+        "agentos-acp"
+      ],
       "login": "claude",
       "defaultMode": "bypassPermissions"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "acp": [
+        "agentos-acp",
+        "--agent",
+        "gemini"
+      ],
+      "login": "gemini",
+      "defaultMode": "yolo"
+    },
+    {
+      "id": "opencode",
+      "name": "opencode",
+      "acp": [
+        "agentos-acp",
+        "--agent",
+        "opencode"
+      ],
+      "login": "opencode",
+      "defaultMode": "build"
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "acp": [
+        "agentos-acp",
+        "--agent",
+        "codex"
+      ],
+      "login": "codex",
+      "defaultMode": "agent-full-access"
     }
   ],
   "desktop": {
     "vncPort": 5900,
-    "start": ["sandbox-desktop"]
+    "start": [
+      "sandbox-desktop"
+    ]
   },
   "outputDir": "~/agentos-output"
 }
