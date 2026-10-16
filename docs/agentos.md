@@ -1,21 +1,22 @@
 # The agentos image
 
-The workstation image with an agent that uses its desktop. Give it a goal —
+The workstation image with agents that use its desktop. Give it a goal —
 "open the browser, install GIMP, resize photo.png, run the tests" — and it
 plans the steps, carries them out on the desktop and in the shell, checks each
 one, and reports back, without stopping to ask. You can watch it work in
 Studio's **Desktop** tab.
 
-The agent is Claude Code, which every sandbox image already has. What this
-image adds is what lets it see and work a desktop, and the settings that let it
-work on its own:
+The agents are those every sandbox image already has: Claude Code, Gemini CLI,
+opencode and Codex. What this image adds is what lets them see and work a
+desktop, and the settings that let them work on their own:
 
 | | What | Where |
 |---|---|---|
 | Desktop | An MCP server: screenshots, mouse, keyboard, windows, applications, clipboard | `agentos-desktop-mcp` |
 | Browser | Playwright's MCP server, driving the image's Chromium on the same desktop | `agentos-browser-mcp` |
-| ACP | The agent over the Agent Client Protocol, for editors and other clients outside the sandbox | `agentos-acp` |
-| Settings | No permission prompts, a few deny rules, both MCP servers, the agent's instructions | `/etc/claude-code/` |
+| ACP | Each agent over the Agent Client Protocol, for Studio, editors and other clients outside the sandbox | `agentos-acp [--agent NAME]` |
+| Instructions | One set for every agent: plan, act, verify, report | `/etc/agentos/AGENTS.md` |
+| Settings | Per agent: both MCP servers, the instructions, no permission prompts | see [The agents](#the-agents) |
 | Manifest | What a client such as Studio may rely on: agents, ACP commands, desktop, output directory | `/etc/agentos/manifest.json` |
 
 Everything in the workstation image is here too: XFCE, Thunar, Chromium, Pinta,
@@ -41,14 +42,40 @@ starts the desktop itself when it first needs it.
 `sandbox-cli agent state` says whether the agent is working, waiting, idle,
 done or failed; `sandbox-cli agent wait` waits for one of those.
 
+## The agents
+
+Each agent gets the same desktop and browser tools and the same instructions,
+from its own system-wide settings: `sandbox-cli agent` restores each agent's
+login into HOME, and Gemini's includes its user settings file, so nothing the
+image sets lives there.
+
+| Agent | Run a task | No prompts by | Settings | Over ACP |
+|---|---|---|---|---|
+| Claude Code | `sandbox-cli agent claude … -- -p "…"` | `bypassPermissions`, managed | `/etc/claude-code/` (managed: wins over the user's) | `agentos-acp` (the ACP project's adapter) |
+| Gemini CLI | `sandbox-cli agent gemini … -- --yolo -p "…"` | `--yolo` on its command line (agentos-acp passes it); settings cannot set it | `/etc/gemini-cli/settings.json` (wins over the user's) | `agentos-acp --agent gemini` (its own `--acp` mode) |
+| opencode | `sandbox-cli agent opencode … -- run "…"` | its permissions, set to allow | `/etc/opencode/opencode.json`, named by `OPENCODE_CONFIG` (over the user's) | `agentos-acp --agent opencode` (its own `acp` mode) |
+| Codex | `sandbox-cli agent codex … -- exec "…"` | `approval_policy = "never"`, `sandbox_mode = "danger-full-access"` | `/etc/codex/config.toml` (below the user's `~/.codex/config.toml`) | `agentos-acp --agent codex` (the ACP project's adapter, on the image's `codex`) |
+
+Logins are each agent's own: `sandbox-cli agent gemini --keep … -- --version`
+restores Gemini's as `… claude …` does Claude's. opencode works without one, on
+its free models; Gemini CLI and Codex refuse a session until they have one or
+an API key (`GEMINI_API_KEY`, `OPENAI_API_KEY`).
+
+Codex's instructions are inlined into its config at build time
+(`developer_instructions`), since it reads none from a path; Gemini CLI loads
+them from `/etc/agentos/context`, one of its include directories.
+
 ## From an editor, over ACP
 
 `agentos-acp` speaks the [Agent Client Protocol](https://agentclientprotocol.com)
-on stdin and stdout, so an editor such as Zed, or any ACP client, can drive the
-agent in a sandbox: send it a task, watch its plan and tool calls stream back,
-and answer its permission requests. It is the ACP project's Claude Code adapter
-(`@agentclientprotocol/claude-agent-acp`), run on the image's own Claude Code,
-so it has the same settings, tools and instructions as `sandbox-cli agent`.
+on stdin and stdout, so Studio's **Agent** tab, an editor such as Zed, or any
+ACP client can drive an agent in a sandbox: send it a task, watch its plan and
+tool calls stream back, and answer its permission requests. Without `--agent`
+it is Claude Code, through the ACP project's adapter
+(`@agentclientprotocol/claude-agent-acp`) on the image's own Claude Code;
+`--agent gemini`, `--agent opencode` and `--agent codex` start the others
+([The agents](#the-agents)). Each has the same settings, tools and instructions
+as under `sandbox-cli agent`.
 
 First make a sandbox with your login in it. `-- --version` asks the model
 nothing; it only lets `sandbox-cli agent` restore the login and keep the
@@ -112,7 +139,10 @@ image offers instead:
   "contract": 1,
   "agents": [
     {"id": "claude", "name": "Claude Code", "acp": ["agentos-acp"],
-     "login": "claude", "defaultMode": "bypassPermissions"}
+     "login": "claude", "defaultMode": "bypassPermissions"},
+    {"id": "gemini", "name": "Gemini CLI", "acp": ["agentos-acp", "--agent", "gemini"],
+     "login": "gemini", "defaultMode": "yolo"},
+    …
   ],
   "desktop": {"vncPort": 5900, "start": ["sandbox-desktop"]},
   "outputDir": "~/agentos-output"
@@ -137,21 +167,22 @@ does not raise it; a client reads the list and shows what is there.
 
 ## How it works on its own
 
-The agent's instructions (`/etc/claude-code/CLAUDE.md`) have it plan the task
+The agents' instructions (`/etc/agentos/AGENTS.md`) have them plan the task
 as a checklist, carry it out a step at a time, check each step — an exit status,
 a file, a page, a fresh screenshot — and finish with a summary. Files it makes
 for you go to `~/agentos-output/`.
 
-It runs with no permission prompts (`bypassPermissions`). What limits it:
+Each runs with no permission prompts ([The agents](#the-agents)). What limits it:
 
 - **The VM.** Nothing outside the sandbox can be reached, and there is no root
   inside it: no sudo, nothing setuid.
 - **The network** you give the sandbox. The command above uses `--network open`
   so the agent can install anything and browse anywhere; `--network allowlist`
   with `--allow <host>` narrows that.
-- **Deny rules** (`/etc/claude-code/managed-settings.json`), which hold in every
-  mode: the agent's tools may not read or change its own login (`~/.claude`) or
-  remove the whole of HOME. They cover the agent's own tools, not every program
+- **Deny rules**, Claude Code's only (`/etc/claude-code/managed-settings.json`),
+  which hold in every mode: its tools may not read or change its own login
+  (`~/.claude`) or remove the whole of HOME. The other agents have the
+  instructions' rule against reading credentials, and no enforced one. They cover the agent's own tools, not every program
   it runs; they are a guard against mistakes and against instructions planted in
   web pages, not a security boundary — the VM is that.
 - **Snapshots.** `--snapshot-every 10m` lets you go back to before a run that
@@ -187,9 +218,12 @@ as long as the sandbox. They refuse `file:` URLs.
 
 ## Limits
 
-- **Only these MCP servers.** `/etc/claude-code/managed-mcp.json` decides which
-  MCP servers Claude Code loads, and a managed list is exclusive: servers added
-  with `claude mcp add` or a project's `.mcp.json` are not loaded.
+- **Only these MCP servers, for Claude Code.** `/etc/claude-code/managed-mcp.json`
+  decides which MCP servers Claude Code loads, and a managed list is exclusive:
+  servers added with `claude mcp add` or a project's `.mcp.json` are not loaded.
+  The other agents add the user's and a project's servers to the image's.
+- **Modes in Studio.** opencode's mode (build or plan) is a session option, not
+  an ACP mode, so Studio's mode menu does not offer it; it starts in build.
 - **Everything the workstation image cannot do,** this cannot either: no GPU, no
   sound, no FUSE ([docs/workstation.md](workstation.md#limits)).
 - **Chromium says it is automated.** Pages the browser tools open carry a bar
@@ -236,4 +270,14 @@ Studio's Desktop tab on a desktop the agent started: the tab used to start a
 second session on it; the workstation image's `sandbox-desktop` now reuses the
 running desktop (docs/workstation.md).
 
-Not yet checked: Zed on another machine through `sandbox-cli exec`, arm64.
+Checked on 2026-10-16 in a container (podman), the other agents:
+
+| Check | Result |
+|---|---|
+| `codex mcp list`, `gemini mcp list`, `opencode mcp list` | Each lists `desktop` and `browser` from the image's settings; Gemini and opencode connected to both. |
+| `opencode debug config` | The instructions are `/etc/agentos/AGENTS.md`, edit, bash and webfetch allowed. |
+| opencode over ACP, no login (its free model): open example.com, give its title, save a desktop screenshot | Done: it used the browser and desktop tools and saved the screenshot to `~/agentos-output/`. |
+| Gemini CLI and Codex over ACP, no login | Both start and answer `initialize`; a session is refused until there is a login ("Gemini API key is missing or not configured", "Authentication required"). |
+
+Not yet checked: a Gemini CLI or Codex task with a login; Zed on another
+machine through `sandbox-cli exec`; arm64.
