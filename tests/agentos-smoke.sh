@@ -4,7 +4,7 @@
 # desktop as the sandbox user, through a real MCP client: the desktop server
 # starts the desktop, takes a screenshot, types into a window, finds and starts
 # applications, and uses the clipboard; the browser server opens a page.
-# Last, an ACP client (tests/acp-client.py) opens a session with the agent.
+# Last, an ACP client (tests/acp-client.py) opens a session with each agent.
 #
 # What it cannot check here: the agent itself, which needs a login. See
 # docs/agentos.md, "Checking on a real host".
@@ -22,18 +22,30 @@ trap cleanup EXIT
 
 echo "smoke: programs and settings"
 "$engine" run --rm --user 1001:1001 "$image" sh -c '
-  for p in agentos-desktop-mcp agentos-browser-mcp agentos-acp claude sandbox-desktop xdotool wmctrl xclip chromium; do
+  for p in agentos-desktop-mcp agentos-browser-mcp agentos-acp claude gemini opencode codex sandbox-desktop xdotool wmctrl xclip chromium; do
     command -v "$p" >/dev/null || { echo "missing: $p"; exit 1; }
   done
-  for f in managed-settings.json managed-mcp.json CLAUDE.md; do
-    test -r "/etc/claude-code/$f" || { echo "missing: /etc/claude-code/$f"; exit 1; }
+  for f in /etc/claude-code/managed-settings.json /etc/claude-code/managed-mcp.json /etc/claude-code/CLAUDE.md \
+           /etc/agentos/AGENTS.md /etc/agentos/context/AGENTS.md /etc/gemini-cli/settings.json \
+           /etc/codex/config.toml "$OPENCODE_CONFIG"; do
+    test -r "$f" || { echo "missing: $f"; exit 1; }
   done
+  # Every agent has both MCP servers, read from its own system-wide settings.
+  codex mcp list | grep -q "^desktop .*agentos-desktop-mcp" || { echo "codex has no desktop server"; exit 1; }
+  codex mcp list | grep -q "^browser .*agentos-browser-mcp" || { echo "codex has no browser server"; exit 1; }
   /opt/agentos/venv/bin/python -I -c "
 import json
 s = json.load(open(\"/etc/claude-code/managed-settings.json\"))
 assert s[\"permissions\"][\"defaultMode\"] == \"bypassPermissions\", s
 m = json.load(open(\"/etc/claude-code/managed-mcp.json\"))
 assert set(m[\"mcpServers\"]) == {\"desktop\", \"browser\"}, m
+g = json.load(open(\"/etc/gemini-cli/settings.json\"))
+assert set(g[\"mcpServers\"]) == {\"desktop\", \"browser\"}, g
+assert g[\"context\"][\"includeDirectories\"] == [\"/etc/agentos/context\"], g
+o = json.load(open(\"/etc/opencode/opencode.json\"))
+assert set(o[\"mcp\"]) == {\"desktop\", \"browser\"}, o
+assert o[\"instructions\"] == [\"/etc/agentos/AGENTS.md\"], o
+assert open(\"/etc/claude-code/CLAUDE.md\").read() == open(\"/etc/agentos/AGENTS.md\").read()
 "
 ' || fail "a program or a setting is missing"
 
@@ -159,5 +171,18 @@ out=$(python3 -I "$(dirname "$0")/acp-client.py" --handshake --timeout 90 \
         --cwd /Users/someone/project --client-mcp "editor-tools=/usr/bin/true" -- \
         "$engine" exec -i "$name" agentos-acp 2>/dev/null) || fail "an editor's session request was refused: $out"
 echo "  ok: an editor's path and MCP servers are handled"
+
+# The other agents. opencode opens a session with no login (it has free
+# models); Gemini CLI and Codex need one for a session, so they are asked to
+# initialize only, which still starts each one in ACP mode.
+out=$(python3 -I "$(dirname "$0")/acp-client.py" --handshake --timeout 120 -- \
+        "$engine" exec -i "$name" agentos-acp --agent opencode 2>/dev/null) || fail "no opencode ACP session: $out"
+echo "  ok: opencode opens a session"
+for a in gemini codex; do
+  out=$(python3 -I "$(dirname "$0")/acp-client.py" --init-only --timeout 120 -- \
+          "$engine" exec -i "$name" agentos-acp --agent "$a" 2>/dev/null) || fail "$a does not answer over ACP: $out"
+  echo "  ok: $a answers initialize"
+done
+"$engine" exec -i "$name" agentos-acp --agent nobody </dev/null >/dev/null 2>&1 && fail "an unknown agent was started"
 
 echo "smoke: ok"
