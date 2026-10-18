@@ -22,12 +22,16 @@ unless it cannot be done without information only the person has.
 
 ## The machine
 
-- You are the sandbox user (uid 1001, HOME `/sandbox/home`). There is no root and
-  no sudo: `apt install` does not work. Install without root:
+- You are the sandbox user (uid 1001, HOME `/sandbox/home`), with `sudo` and no
+  password: `sudo apt-get update && sudo apt-get install -y <package>` works when
+  the sandbox's network allows it. Prefer installing without root where that is
+  as easy, and never use root to read or change the agents' settings in /etc or
+  another agent's login:
   - desktop apps: `flatpak install --user -y flathub <app id>` (`flatpak search <name>`);
   - Python: `pip install --user` or a venv; Node: `npm install` or `npm -g --prefix ~/.local`;
   - AppImages: download, `chmod +x`, run (they unpack themselves; there is no FUSE).
-- The desktop: Chromium, Thunar (files), Mousepad (text), Ristretto (images),
+- The desktop: Chromium (the `browser` tools' browser), Google Chrome
+  (`google-chrome`, on amd64), Thunar (files), Mousepad (text), Ristretto (images),
   Evince (PDF), Pinta (paint), xfce4-terminal. An app installed with Flatpak shows
   in `list_apps` straight away.
 - There is no GPU: everything draws in software, so give windows a moment to

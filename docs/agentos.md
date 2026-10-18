@@ -18,6 +18,8 @@ desktop, and the settings that let them work on their own:
 | Instructions | One set for every agent: plan, act, verify, report | `/etc/agentos/AGENTS.md` |
 | Settings | Per agent: both MCP servers, the instructions, no permission prompts | see [The agents](#the-agents) |
 | Manifest | What a client such as Studio may rely on: agents, ACP commands, desktop, output directory | `/etc/agentos/manifest.json` |
+| Google Chrome | Beside Chromium, for sites that want Chrome; amd64 only, as Google publishes no arm64 `.deb` | `google-chrome` |
+| sudo | Root for the sandbox user, without a password, so an agent can `sudo apt-get install` | `/etc/sudoers.d/sandbox` |
 
 Everything in the workstation image is here too: XFCE, Thunar, Chromium, Pinta,
 Flatpak with Flathub.
@@ -174,8 +176,12 @@ for you go to `~/agentos-output/`.
 
 Each runs with no permission prompts ([The agents](#the-agents)). What limits it:
 
-- **The VM.** Nothing outside the sandbox can be reached, and there is no root
-  inside it: no sudo, nothing setuid.
+- **The VM.** Nothing outside the sandbox can be reached. Inside it, the
+  sandbox user has root through `sudo` without a password, unlike the
+  workstation image, so an agent can `sudo apt-get install` what a task needs.
+  `/usr/bin/sudo` is the only setuid file. The VM and the network policy are
+  therefore the whole boundary: anything in the guest, the agents' settings in
+  `/etc` included, is the agent's to change.
 - **The network** you give the sandbox. The command above uses `--network open`
   so the agent can install anything and browse anywhere; `--network allowlist`
   with `--allow <host>` narrows that.
@@ -183,8 +189,9 @@ Each runs with no permission prompts ([The agents](#the-agents)). What limits it
   which hold in every mode: its tools may not read or change its own login
   (`~/.claude`) or remove the whole of HOME. The other agents have the
   instructions' rule against reading credentials, and no enforced one. They cover the agent's own tools, not every program
-  it runs; they are a guard against mistakes and against instructions planted in
-  web pages, not a security boundary — the VM is that.
+  it runs, and an agent with sudo can step around them; they are a guard
+  against mistakes and against instructions planted in web pages, not a
+  security boundary — the VM is that.
 - **Snapshots.** `--snapshot-every 10m` lets you go back to before a run that
   went wrong.
 
@@ -226,6 +233,18 @@ as long as the sandbox. They refuse `file:` URLs.
   an ACP mode, so Studio's mode menu does not offer it; it starts in build.
 - **Everything the workstation image cannot do,** this cannot either: no GPU, no
   sound, no FUSE ([docs/workstation.md](workstation.md#limits)).
+- **Chrome is amd64 only,** and the browser tools drive Chromium, not Chrome.
+  Chrome is current as of the image build (`google-chrome --version`); Google's
+  apt source is in the image, so `sudo apt-get install --only-upgrade
+  google-chrome-stable` updates it in a sandbox with the network for it.
+- **sudo needs a root-run `sandboxd` that keeps setuid bits.** sandbox-cli
+  releases before the fix for setuid bits (root disk format 2) dropped every
+  setuid bit from the disks they built, so `/usr/bin/sudo` refuses to run
+  ("must be owned by uid 0 and have the setuid bit set"). A `sandboxd` run
+  without root builds disks whose files belong to the building user
+  ([docs/workstation.md](workstation.md)) and drops the bit on purpose, with
+  the same result. A root-run `sandboxd` with the fix keeps it, and sudo
+  works. Everything else in the image works on either.
 - **Chromium says it is automated.** Pages the browser tools open carry a bar
   about an "unsupported command-line flag", which Playwright passes; it does not
   get in the way.
@@ -235,7 +254,8 @@ as long as the sandbox. They refuse `file:` URLs.
 ## Checking on a real host
 
 `tests/agentos-smoke.sh IMAGE` checks a built image in a container: the
-settings are in place, nothing is setuid, and both MCP servers work the desktop
+settings are in place, only sudo is setuid and it asks no password, Chrome
+renders a page (amd64), and both MCP servers work the desktop
 through a real MCP client — a screenshot, the pointer, typing into a window,
 starting applications, the clipboard, opening a page in the browser — and that
 an ACP client (`tests/acp-client.py`) can open a session with the agent, an

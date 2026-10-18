@@ -9,6 +9,9 @@
 #                         on that same desktop
 #   agentos-acp           an agent over the Agent Client Protocol, for Studio,
 #                         editors and other ACP clients outside the sandbox
+#   Google Chrome         beside Chromium, on amd64 (Google builds no arm64 .deb)
+#   sudo                  for the sandbox user, without a password: unlike the
+#                         workstation image, root is a sudo away (see below)
 #   /etc/agentos/         AGENTS.md, the agents' instructions; manifest.json,
 #                         what a client such as Studio may rely on (the agents
 #                         and their ACP commands, the desktop, the output
@@ -45,7 +48,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       # Chinese, Japanese and Korean text, which the agent meets on the web:
       # without it, those pages are rows of empty boxes in its screenshots.
       fonts-noto-cjk \
+      sudo \
     && rm -rf /var/lib/apt/lists/*
+
+# Google Chrome, for the sites that want it rather than Chromium. Google
+# publishes only an amd64 .deb, so an arm64 build goes without. The package
+# adds Google's apt source, which is kept: with sudo, `apt-get install
+# --only-upgrade google-chrome-stable` updates it in a sandbox. Its setuid
+# sandbox helper loses the bit below, as everything but sudo does; Chrome
+# sandboxes with user namespaces instead, as Chromium does here.
+#
+# HOME=/root: the base image's HOME is the sandbox user's, and the package
+# registers itself as a browser in HOME's mimeapps.list, which would leave a
+# root-owned ~/.local that the user's programs (opencode among them) cannot
+# write under.
+RUN export HOME=/root; \
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then \
+      curl -fsSL --proto '=https' -o /tmp/google-chrome.deb \
+        https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+      && apt-get update \
+      && apt-get install -y --no-install-recommends /tmp/google-chrome.deb \
+      && rm -rf /tmp/google-chrome.deb /var/lib/apt/lists/* \
+      && google-chrome-stable --version; \
+    fi
+
+# The sandbox user may become root without a password. This undoes the
+# workstation image's "no root inside the guest" on purpose, so agents can
+# `sudo apt-get install` what a task needs: the VM and its network policy are
+# then the whole boundary, and Claude Code's deny rules bind only an agent
+# that does not use sudo to step around them.
+RUN printf 'sandbox ALL=(ALL:ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/sandbox \
+    && chmod 0440 /etc/sudoers.d/sandbox \
+    && visudo -cq
 
 # The desktop MCP server's Python, in its own environment, pinned.
 COPY requirements.txt /opt/agentos/requirements.txt
@@ -100,6 +134,6 @@ RUN chmod 0755 /usr/local/bin/agentos-desktop-mcp /usr/local/bin/agentos-browser
       /usr/local/bin/agentos-acp \
     && chmod 0644 /etc/claude-code/* /etc/gemini-cli/* /etc/codex/* /etc/opencode/* \
          /etc/agentos/AGENTS.md /etc/agentos/manifest.json /etc/agentos/context/AGENTS.md \
-    # As in the workstation image: nothing setuid or setgid, including what
-    # the packages above brought.
-    && find / -xdev -type f -perm /6000 -exec chmod ug-s {} +
+    # As in the workstation image, nothing setuid or setgid, including what
+    # the packages above brought, but sudo: the one way to root, on purpose.
+    && find / -xdev -type f -perm /6000 ! -path /usr/bin/sudo -exec chmod ug-s {} +

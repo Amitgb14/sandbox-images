@@ -1,6 +1,6 @@
 #!/bin/sh
 # agentos-smoke.sh IMAGE: checks a built agentos image in a container — its
-# settings are in place, nothing is setuid, and both MCP servers work the
+# settings are in place, only sudo is setuid, and both MCP servers work the
 # desktop as the sandbox user, through a real MCP client: the desktop server
 # starts the desktop, takes a screenshot, types into a window, finds and starts
 # applications, and uses the clipboard; the browser server opens a page.
@@ -22,7 +22,7 @@ trap cleanup EXIT
 
 echo "smoke: programs and settings"
 "$engine" run --rm --user 1001:1001 "$image" sh -c '
-  for p in agentos-desktop-mcp agentos-browser-mcp agentos-acp claude gemini opencode codex sandbox-desktop xdotool wmctrl xclip chromium; do
+  for p in agentos-desktop-mcp agentos-browser-mcp agentos-acp claude gemini opencode codex sandbox-desktop xdotool wmctrl xclip chromium sudo; do
     command -v "$p" >/dev/null || { echo "missing: $p"; exit 1; }
   done
   for f in /etc/claude-code/managed-settings.json /etc/claude-code/managed-mcp.json /etc/claude-code/CLAUDE.md \
@@ -63,9 +63,23 @@ assert shutil.which(m['desktop']['start'][0]), m['desktop']
 assert m['desktop']['vncPort'] == 5900, m['desktop']
 " || fail "the manifest does not match the label or the image"
 
-echo "smoke: no setuid or setgid files"
-n=$("$engine" run --rm "$image" sh -c 'find / -xdev -type f -perm /6000 2>/dev/null | wc -l')
-[ "$n" -eq 0 ] || fail "$n setuid or setgid files"
+echo "smoke: nothing setuid or setgid but sudo, and sudo needs no password"
+files=$("$engine" run --rm "$image" sh -c 'find / -xdev -type f -perm /6000 2>/dev/null')
+[ "$files" = /usr/bin/sudo ] || fail "setuid or setgid files: $files"
+[ "$("$engine" run --rm --user 1001:1001 "$image" sudo -n id -u)" = 0 ] \
+  || fail "the sandbox user cannot sudo without a password"
+
+# A package installed as root with the base image's HOME can leave a root-owned
+# directory there, and then the agents cannot keep their state in it.
+"$engine" run --rm --user 1001:1001 "$image" sh -c 'mkdir -p ~/.local/share/probe ~/.config/probe ~/.cache/probe' \
+  || fail "the sandbox user cannot write ~/.local, ~/.config or ~/.cache"
+
+if [ "$("$engine" run --rm "$image" dpkg --print-architecture)" = amd64 ]; then
+  echo "smoke: Google Chrome runs"
+  "$engine" run --rm --user 1001:1001 "$image" \
+    google-chrome-stable --headless=new --no-sandbox --disable-gpu --dump-dom 'data:text/html,<p>chrome-ok</p>' 2>/dev/null \
+    | grep -q chrome-ok || fail "google-chrome-stable did not render a page"
+fi
 
 echo "smoke: the MCP servers work the desktop"
 "$engine" run -d --name "$name" --user 1001:1001 "$image" sleep infinity >/dev/null
