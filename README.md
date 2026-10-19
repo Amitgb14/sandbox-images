@@ -5,7 +5,7 @@ publishes, kept apart from it so they can be larger and change on their own.
 
 | Image | Built on | What it is |
 |---|---|---|
-| `ghcr.io/<owner>/sandbox-workstation` | `sandbox-desktop` | A full XFCE desktop: files, browser, Pinta, Flatpak — [docs/workstation.md](docs/workstation.md) |
+| `ghcr.io/<owner>/sandbox-workstation` | `sandbox-desktop` | A full XFCE desktop: files, browser, Pinta, Flatpak; OpenGL on the GPU in a sandbox given one — [docs/workstation.md](docs/workstation.md) |
 | `ghcr.io/<owner>/sandbox-agentos` | `sandbox-workstation` | The workstation, with agents (Claude Code, Gemini CLI, opencode, Codex) that work its desktop on their own, Google Chrome (amd64) and passwordless sudo — [docs/agentos.md](docs/agentos.md) |
 | `ghcr.io/<owner>/sandbox-cuda` | `sandbox-base` | The base image with the CUDA 13.3 compiler and runtime, for a sandbox given a GPU (`--gpus`); amd64 only — [docs/cuda.md](docs/cuda.md) |
 

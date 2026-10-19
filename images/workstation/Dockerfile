@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       tigervnc-standalone-server \
       tigervnc-tools \
       x11-xserver-utils \
-      # Software rendering (llvmpipe): a Firecracker guest has no GPU.
+      # Software rendering (llvmpipe), for a sandbox without a GPU.
       libgl1-mesa-dri \
       # The desktop.
       xfce4-session \
@@ -91,6 +91,30 @@ RUN mkdir -p /usr/share/sandbox-workstation \
     # document portal for anything else; that portal needs FUSE, which the
     # guest does not have. The VM is the boundary that matters here.
     && flatpak override --system --filesystem=home "${PINTA}"
+
+# VirtualGL, so a sandbox given a GPU (sandbox-cli run --gpus) draws OpenGL on
+# it. Its EGL back end renders on the card with no X server there, reads each
+# frame back and puts it on the VNC display, so the display, its port and
+# Studio's Desktop tab are the same with a GPU or without one. sandbox-desktop
+# runs the session through it when the GPU answers, and draws in software
+# otherwise. The driver is not here: sandboxd adds the node's GPU kit,
+# NVIDIA's EGL driver among it, to a GPU sandbox's root disk. Debian 12 does
+# not package VirtualGL, so it is the project's own release, checked against
+# its checksum.
+ARG VIRTUALGL=3.1.5
+ARG VIRTUALGL_SHA256_AMD64=df3f7788ce41b182a47c0d298e5cd6d2d63579522cb41825970b7726e825485e
+ARG VIRTUALGL_SHA256_ARM64=9ac238e8a18c06d84ef65444a591a7a5bb4c4ce9e8cfdd92f8a2aea35edbb5d7
+RUN arch=$(dpkg --print-architecture) \
+    && case $arch in \
+         amd64) sum=${VIRTUALGL_SHA256_AMD64} ;; \
+         arm64) sum=${VIRTUALGL_SHA256_ARM64} ;; \
+         *) echo "no VirtualGL for $arch" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /tmp/virtualgl.deb \
+         "https://github.com/VirtualGL/virtualgl/releases/download/${VIRTUALGL}/virtualgl_${VIRTUALGL}_${arch}.deb" \
+    && echo "${sum}  /tmp/virtualgl.deb" | sha256sum -c - \
+    && apt-get update && apt-get install -y --no-install-recommends /tmp/virtualgl.deb \
+    && rm -rf /tmp/virtualgl.deb /var/lib/apt/lists/*
 
 COPY sandbox-desktop /usr/local/bin/sandbox-desktop
 COPY flatpak /usr/local/bin/flatpak
