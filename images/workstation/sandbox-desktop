@@ -10,17 +10,31 @@
 #   SANDBOX_DESKTOP_PORT      the VNC port on 127.0.0.1 (default 5900)
 #   SANDBOX_DESKTOP_SESSION   xfce (default) or openbox, the desktop image's
 #                             window manager, terminal and browser
+#   SANDBOX_DESKTOP_GPU       auto (default): OpenGL draws on the sandbox's GPU
+#                             when it has one that answers, and in software
+#                             otherwise; on: the GPU, or the desktop does not
+#                             start; off: software
+#
+# With the GPU, the session runs through VirtualGL: OpenGL is drawn on the
+# card through its EGL driver and each frame is put on this display, so
+# everything else here is the same. The renderer in use is written to
+# $XDG_RUNTIME_DIR/sandbox-desktop.gl.
 set -eu
 
 display=:1
 size=${SANDBOX_DESKTOP_SIZE:-1280x800x24}
 port=${SANDBOX_DESKTOP_PORT:-5900}
 session=${SANDBOX_DESKTOP_SESSION:-xfce}
+gpu=${SANDBOX_DESKTOP_GPU:-auto}
 export DISPLAY=$display
 
 case $session in
   xfce|openbox) ;;
   *) echo "sandbox-desktop: SANDBOX_DESKTOP_SESSION is xfce or openbox, not '$session'" >&2; exit 2 ;;
+esac
+case $gpu in
+  auto|on|off) ;;
+  *) echo "sandbox-desktop: SANDBOX_DESKTOP_GPU is auto, on or off, not '$gpu'" >&2; exit 2 ;;
 esac
 
 geometry=${size%x*}
@@ -100,15 +114,43 @@ until kill -0 "$xvnc" 2>/dev/null && xdpyinfo >/dev/null 2>&1; do
   sleep 0.1
 done
 
+# The GPU: the renderer VirtualGL gets from the card's EGL driver, asked on
+# this display. A sandbox without a GPU has no /dev/nvidiactl; one whose
+# driver does not answer gets software rather than no desktop, unless the GPU
+# was asked for.
+vgl=/opt/VirtualGL/bin
+renderer=
+if [ "$gpu" != off ] && [ -e /dev/nvidiactl ] && [ -x "$vgl/vglrun" ]; then
+  renderer=$(VGL_DISPLAY=egl timeout 30 "$vgl/vglrun" "$vgl/glxinfo" -B 9>&- 2>/dev/null |
+    sed -n 's/^OpenGL renderer string: //p') || true
+  case $renderer in
+    *llvmpipe*|*softpipe*) renderer= ;;
+  esac
+fi
+run=
+if [ -n "$renderer" ]; then
+  # +wm: the window manager runs through it too, as TurboVNC's -vgl does.
+  export VGL_DISPLAY=egl
+  run="$vgl/vglrun +wm"
+  echo "sandbox-desktop: OpenGL draws on the GPU: $renderer" >&2
+elif [ "$gpu" = on ]; then
+  echo "sandbox-desktop: SANDBOX_DESKTOP_GPU=on, but no GPU answers (is this a sandbox made with --gpus?)" >&2
+  kill "$xvnc" 2>/dev/null
+  exit 1
+else
+  renderer=$("$vgl/glxinfo" -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p') || true
+fi
+printf '%s\n' "${renderer:-unknown}" >"$XDG_RUNTIME_DIR/sandbox-desktop.gl"
+
 case $session in
   xfce)
     xdg-user-dirs-update >/dev/null 2>&1 || true
-    dbus-launch --exit-with-session startxfce4 >/dev/null 2>&1 9>&- &
+    $run dbus-launch --exit-with-session startxfce4 >/dev/null 2>&1 9>&- &
     ;;
   openbox)
-    openbox 9>&- &
-    xterm -geometry 100x30+40+40 9>&- &
-    chromium --new-window "about:blank" >/dev/null 2>&1 9>&- &
+    $run openbox 9>&- &
+    $run xterm -geometry 100x30+40+40 9>&- &
+    $run chromium --new-window "about:blank" >/dev/null 2>&1 9>&- &
     ;;
 esac
 exec 9>&-

@@ -7,7 +7,11 @@
 # to mount /proc in a fresh namespace, which a container does not allow; a
 # Firecracker guest does. See docs/workstation.md, "Checking on a real host".
 #
-#   ENGINE   docker or podman (default: whichever is installed, docker first)
+#   ENGINE       docker or podman (default: whichever is installed, docker first)
+#   GPU_KIT      a GPU kit (sandbox-cli's scripts/gpu-kit.sh), and
+#   GPU_DEVICES  1 to give the container the host's /dev/nvidia* as a GPU
+#                sandbox has them: also check that the desktop draws on the
+#                GPU. The host's driver must be the kit's version.
 set -eu
 
 image=${1:?usage: smoke.sh IMAGE}
@@ -15,12 +19,16 @@ engine=${ENGINE:-$(command -v docker >/dev/null 2>&1 && echo docker || echo podm
 name=sandbox-workstation-smoke-$$
 
 fail() { echo "smoke: FAIL: $*" >&2; exit 1; }
-cleanup() { "$engine" rm -f "$name" >/dev/null 2>&1 || true; }
+cleanup() {
+  "$engine" rm -f "$name" "$name-gpu" >/dev/null 2>&1 || true
+  [ -z "${kitimage:-}" ] || "$engine" rmi -f "$kitimage" >/dev/null 2>&1 || true
+  [ -z "${work:-}" ] || rm -rf "$work"
+}
 trap cleanup EXIT
 
 echo "smoke: programs"
 "$engine" run --rm --user 1001:1001 "$image" sh -c '
-  for p in sandbox-desktop Xvnc startxfce4 xfwm4 xfce4-panel xfdesktop thunar \
+  for p in sandbox-desktop Xvnc startxfce4 /opt/VirtualGL/bin/vglrun xfwm4 xfce4-panel xfdesktop thunar \
            chromium xfce4-terminal mousepad ristretto evince file-roller flatpak \
            openbox xterm; do
     command -v "$p" >/dev/null || { echo "missing: $p"; exit 1; }
@@ -81,5 +89,62 @@ echo "smoke: starting it again reuses the running desktop"
   [ "$n" -eq 1 ] || { echo "$n desktop sessions"; exit 1; }
   kill $again
 ' || fail "a second start is not right"
+
+echo "smoke: without a GPU, the desktop draws in software"
+"$engine" exec "$name" sh -c '
+  grep -q llvmpipe /tmp/runtime-1001/sandbox-desktop.gl || { echo "renderer: $(cat /tmp/runtime-1001/sandbox-desktop.gl)"; exit 1; }
+  if grep -qz vglfaker "/proc/$(pgrep -u 1001 -x xfwm4)/environ"; then echo "the session runs through VirtualGL"; exit 1; fi
+' || fail "the desktop without a GPU is not right"
+set +e
+out=$("$engine" run --rm --user 1001:1001 -e SANDBOX_DESKTOP_GPU=on "$image" sandbox-desktop 2>&1); rc=$?
+set -e
+[ "$rc" -eq 1 ] && echo "$out" | grep -q "no GPU answers" || { echo "$out" >&2; fail "SANDBOX_DESKTOP_GPU=on without a GPU exited $rc"; }
+
+if [ -n "${GPU_KIT:-}" ] && [ "${GPU_DEVICES:-}" = 1 ]; then
+  echo "smoke: with a GPU, the desktop draws on it"
+  [ -f "$GPU_KIT/kit.json" ] || fail "$GPU_KIT is not a GPU kit (no kit.json)"
+  # The kit, laid out as sandboxd adds it, through the image's own symlinks:
+  # the kit's lib/firmware is the image's /usr/lib/firmware.
+  work=$(mktemp -d)
+  mkdir -p "$work/rootfs"
+  cp -a "$GPU_KIT/rootfs/." "$work/rootfs/"
+  if [ -d "$work/rootfs/lib" ]; then
+    mkdir -p "$work/rootfs/usr/lib"
+    cp -a "$work/rootfs/lib/." "$work/rootfs/usr/lib/"
+    rm -rf "$work/rootfs/lib"
+  fi
+  printf 'FROM %s\nCOPY rootfs/ /\n' "$image" >"$work/Containerfile"
+  kitimage=sandbox-workstation-smoke-kit:$$
+  "$engine" build -q -t "$kitimage" -f "$work/Containerfile" "$work" >/dev/null
+  # The nodes sandbox-guestd makes in a GPU sandbox, and no others.
+  devs=""
+  for d in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
+    [ -e "$d" ] || fail "no $d on this host"
+    devs="$devs --device $d"
+  done
+  # shellcheck disable=SC2086
+  "$engine" run -d --name "$name-gpu" --user 1001:1001 --security-opt label=disable $devs \
+    -e SANDBOX_DESKTOP_GPU=on "$kitimage" sandbox-desktop >/dev/null
+  i=0
+  until "$engine" exec "$name-gpu" test -s /tmp/runtime-1001/sandbox-desktop.gl 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -lt 60 ] || { "$engine" logs "$name-gpu" >&2; fail "the GPU desktop did not start"; }
+    sleep 1
+  done
+  sleep 5
+  "$engine" exec "$name-gpu" sh -c '
+    r=$(cat /tmp/runtime-1001/sandbox-desktop.gl)
+    case $r in *NVIDIA*) echo "renderer: $r" ;; *) echo "renderer: $r"; exit 1 ;; esac
+    grep -qz vglfaker "/proc/$(pgrep -u 1001 -x xfwm4)/environ" || { echo "the session does not run through VirtualGL"; exit 1; }
+    # A program started from the session draws on the card, shown on the
+    # VNC display.
+    # (stdbuf: it is stopped by the timeout, so what it buffered would be lost.)
+    out=$(DISPLAY=:1 VGL_DISPLAY=egl timeout 8 stdbuf -oL \
+      /opt/VirtualGL/bin/vglrun /opt/VirtualGL/bin/glxspheres64 2>&1)
+    echo "$out" | grep "OpenGL Renderer" | grep -q NVIDIA || { echo "$out"; exit 1; }
+    echo "$out" | grep -q "frames/sec" || { echo "$out"; echo "no frames drawn"; exit 1; }
+    echo "$out" | grep "OpenGL Renderer"; echo "$out" | grep -m1 "frames/sec"
+  ' || { "$engine" logs "$name-gpu" >&2; fail "the desktop does not draw on the GPU"; }
+fi
 
 echo "smoke: ok"

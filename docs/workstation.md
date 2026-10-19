@@ -82,18 +82,59 @@ and the sandbox user can run it but not remove or update it.
 
 ## Settings
 
-`sandbox-desktop` reads the desktop image's two variables, and one more:
+`sandbox-desktop` reads the desktop image's two variables, and two more:
 
 | Variable | Default | |
 |---|---|---|
 | `SANDBOX_DESKTOP_SIZE` | `1280x800x24` | the screen at start: width x height x depth |
 | `SANDBOX_DESKTOP_PORT` | `5900` | the VNC port; Studio's tab reaches 5900 only |
 | `SANDBOX_DESKTOP_SESSION` | `xfce` | `openbox` for the desktop image's lighter session |
+| `SANDBOX_DESKTOP_GPU` | `auto` | `auto`: OpenGL on the sandbox's GPU when it has one that answers, in software otherwise; `on`: the GPU, or the desktop does not start; `off`: software (see "With a GPU") |
 
 Running `sandbox-desktop` while a desktop is already up starts nothing: it says
 so and stays in the foreground for as long as that desktop runs. Studio's
 Desktop tab runs it each time it connects, and an agent's tools may have
 started the desktop first.
+
+## With a GPU
+
+In a sandbox given a GPU (`sandbox-cli run --gpus 1`, on a node that serves
+one), OpenGL programs started on the desktop draw on the card. Nothing else
+changes: the same display, the same port, Studio's same Desktop tab.
+
+```sh
+sandbox-cli run --keep --name gws --gpus 1 \
+  --image ghcr.io/amitgb14/sandbox-workstation:edge \
+  --cpus 4 --memory 8192 -- true
+```
+
+`sandbox-desktop` asks the card for an OpenGL renderer when it starts. When it
+answers, the whole session runs through [VirtualGL](https://virtualgl.org):
+each program's OpenGL is drawn on the card, through NVIDIA's EGL driver with
+no X server on the card, and every frame is copied to the VNC display. It says
+which in its log and in `$XDG_RUNTIME_DIR/sandbox-desktop.gl`:
+
+```
+sandbox-desktop: OpenGL draws on the GPU: NVIDIA GeForce RTX 5070 Ti/PCIe/SSE2
+```
+
+The driver is not in the image. sandboxd adds the node's GPU kit to a GPU
+sandbox's root disk, and the kit has NVIDIA's OpenGL, EGL and Vulkan drivers
+beside CUDA's.
+
+| | With a GPU |
+|---|---|
+| OpenGL programs started on the desktop, or from a terminal on it (Blender, glxgears, a game on OpenGL) | the GPU |
+| `glxspheres64` (VirtualGL's own test, in `/opt/VirtualGL/bin`) | about 2000 frames a second on an RTX 5070 Ti, against about 120 in software |
+| Chromium and Chrome | software: their GPU process does not take VirtualGL's visual ("Invalid visual ID"), and they fall back to drawing it themselves. Browsing is as without a GPU |
+| Flatpak apps | software: an app's own runtime has its own Mesa, and VirtualGL does not reach inside its sandbox |
+| Vulkan | the card is there (`/usr/share/vulkan/icd.d/nvidia_icd.json`), for compute and drawing off screen; but NVIDIA's driver cannot make a Vulkan window on this display (`vkcube` picks the card, then fails to make its swapchain), so games on Vulkan (and Proton) do not work yet |
+| CUDA | as in any GPU sandbox; the [CUDA image](cuda.md) has the compiler |
+
+What a frame costs: it is drawn on the card, copied back to memory, and then
+encoded and sent to the viewer like any change on the screen. A program that
+draws thousands of frames a second shows as many as the viewer's connection
+carries.
 
 ## What is different from the desktop image
 
@@ -108,8 +149,8 @@ started the desktop first.
 
 ## Limits
 
-- **No GPU.** Firecracker has none to give the guest, so everything draws in
-  software (Mesa's llvmpipe). Browsing, office work and painting are fine;
+- **No GPU, unless the sandbox has one.** A sandbox without `--gpus` draws
+  everything in software (Mesa's llvmpipe). Browsing, office work and painting are fine;
   video, 3D and games are slow.
 - **No sound**, yet.
 - **No FUSE**, so AppImages unpack themselves (above), and Flatpak's document
@@ -145,6 +186,19 @@ sandbox-cli run --image 127.0.0.1:5005/sandbox-workstation:dev --cpus 2 --memory
 # expect a window named "Unsaved Image 1 - Pinta"
 ```
 
+**With a GPU.** Given a GPU kit and `GPU_DEVICES=1`, `tests/smoke.sh` also
+adds the kit to the image as sandboxd does, gives the container the host's
+`/dev/nvidia0`, `/dev/nvidiactl` and `/dev/nvidia-uvm*` (the nodes a GPU
+sandbox has), and checks that the desktop draws on the card: the renderer is
+NVIDIA's, the session runs through VirtualGL, and `glxspheres64` draws frames
+on the card. The host's NVIDIA driver must be the kit's version, as the kit's
+libraries talk to the host's kernel module.
+
+```sh
+ENGINE=podman GPU_KIT=/var/lib/sandboxd/gpu-kit GPU_DEVICES=1 \
+  sh tests/smoke.sh localhost/sandbox-workstation:dev
+```
+
 **A `sandboxd` run without root** (as above) builds disks whose files all belong
 to the building user, not to the sandbox user, and says so in its log ("built
 without root"). Directories the image made for the sandbox user, `~/.cache`
@@ -167,3 +221,11 @@ running: each time the tab connected it ran `sandbox-desktop`, which started a
 second XFCE session on the same display ("The notification area lost
 selection"). It now reuses the running desktop, under a lock, and
 tests/smoke.sh checks it. Not yet checked: arm64.
+
+Checked on 2026-10-18 with the host's RTX 5070 Ti and driver 610.43.02 (the
+kit's), in a container as above: the desktop drew on the card
+(`NVIDIA GeForce RTX 5070 Ti/PCIe/SSE2`), `glxspheres64` drew about 2000 frames
+a second against about 120 with llvmpipe, Chromium started in the session and
+drew in software, and `vkcube` found the card but could not make a window. Not
+yet checked: the same in a sandbox given the card, which waits for the node to
+hand it over (sandbox-cli's docs/gpu.md, step 3).

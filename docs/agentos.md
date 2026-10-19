@@ -231,8 +231,9 @@ as long as the sandbox. They refuse `file:` URLs.
   The other agents add the user's and a project's servers to the image's.
 - **Modes in Studio.** opencode's mode (build or plan) is a session option, not
   an ACP mode, so Studio's mode menu does not offer it; it starts in build.
-- **Everything the workstation image cannot do,** this cannot either: no GPU, no
-  sound, no FUSE ([docs/workstation.md](workstation.md#limits)).
+- **Everything the workstation image cannot do,** this cannot either: no
+  sound, no FUSE, and a GPU only in a sandbox given one, for OpenGL
+  ([docs/workstation.md](workstation.md#with-a-gpu)).
 - **Chrome is amd64 only,** and the browser tools drive Chromium, not Chrome.
   Chrome is current as of the image build (`google-chrome --version`); Google's
   apt source is in the image, so `sudo apt-get install --only-upgrade
